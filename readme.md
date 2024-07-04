@@ -1,0 +1,6 @@
+## Project Distributed Learning and Optimization
+
+TODO:
+ - Implementare GIANT:
+    - Implementare conjugate gradient ...
+    - Implementare logica aggregazione ...
