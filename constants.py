@@ -17,7 +17,7 @@ CONFIG = {
     "N_CLIENTS": 20,
     "SPLIT_SIZES": [0.8, 0.2],  # (Train, Validation), test is already separated
     "EPOCHS": 20,
-    "BATCH_SIZE": 32,
+    "BATCH_SIZE": 128,
     "LEARNING_RATE": 0.001,
     "GAMMA": 0.01,
     # --- WANDB VARIABLES ---

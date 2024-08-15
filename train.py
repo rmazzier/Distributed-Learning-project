@@ -4,59 +4,137 @@ import numpy as np
 import os
 
 from model import LinearModel
-from constants import DEVICE
+from constants import DEVICE, CONFIG
 
 
-def LRLoss(y_pred, y_true):
+def LRLoss(y_pred, y_true, params, gamma=CONFIG["GAMMA"]):
     """
     This is the loss function taken from the paper for binary classification.
     It expects that the label should be -1 or 1, and y_pred can be in range (-inf, inf). (i.e. no sigmoid in output layer)
 
     If we assume that labels are 0 and 1, and use the sigmoid in output layer, then we can use the BCELoss.
-    (they are equivalent)
+    (they are equivalent, but maybe BCE loss is more stable?)
     """
-    return torch.log(1 + torch.exp(-y_pred * y_true)).mean()
+    params = params.squeeze()
+    l2norm = torch.dot(params, params)
+
+    return torch.log(1 + torch.exp(-y_pred * y_true)).mean() + gamma / 2 * l2norm
 
 
-def train_epoch(
-    config,
-    train_dataloader,
-    net,
-    optimizer,
-    criterion,
-    max_iters=None,
-):
-    """
-    Train the model for one epoch
-    """
+# def train_epoch(
+#     config,
+#     train_dataloader,
+#     net,
+#     optimizer,
+#     criterion,
+#     max_iters=None,
+# ):
+#     """
+#     Train the model for one epoch
+#     """
 
+#     net.train()
+#     train_loss = 0.0
+#     epoch_accuracy = 0.0
+
+#     for i, (X, y) in enumerate(train_dataloader):
+#         if i % 100 == 0:
+#             print(f"Batch {i}")
+#         X = X.float().to(DEVICE)
+#         y = y.float().to(DEVICE)
+
+#         optimizer.zero_grad()
+
+#         y_pred = net(X)
+#         loss = criterion(y_pred, y)
+
+#         loss.backward()
+#         optimizer.step()
+
+#         train_loss += loss.item()
+#         bools = (y_pred.squeeze() > 0) == y
+#         preds = torch.tensor([1 if b else 0 for b in bools]).float()
+
+#         epoch_accuracy += preds.mean().item()
+
+#         if max_iters is not None and i >= max_iters:
+#             break
+
+#     return train_loss / len(train_dataloader), epoch_accuracy / len(train_dataloader)
+
+
+def train_epoch(config, train_dataloader, net, criterion, max_iters=None):
+
+    def backtracking_line_search(
+        X, y, criterion, parameters, gradient, direction, c=0.1
+    ):
+        candidates = [1.0, 0.1, 0.01, 0.001, 0.0001]
+        for candidate in candidates:
+            # Armijo - Goldstein condition
+            y_hat_old = torch.matmul(X, torch.transpose(parameters, 0, 1))
+            y_hat_new = torch.matmul(
+                X, torch.transpose(parameters + candidate * direction, 0, 1)
+            )
+
+            if criterion(y_hat_new, y, parameters + candidate * direction) <= criterion(
+                y_hat_old, y, parameters
+            ) + candidate * c * torch.dot(direction.squeeze(), gradient.squeeze()):
+                break
+        print(candidate)
+        return candidate
+
+    """Variation of train_epoch function, where I implement gradient descent by hand"""
     net.train()
     train_loss = 0.0
     epoch_accuracy = 0.0
 
-    for i, (X, y) in enumerate(train_dataloader):
-        if i % 100 == 0:
-            print(f"Batch {i}")
+    counter = 0
+
+    print("Start train dataloader for loop")
+    for X, y in train_dataloader:
+        if counter % 100 == 0:
+            print(f"Batch {counter}")
         X = X.float().to(DEVICE)
         y = y.float().to(DEVICE)
 
-        optimizer.zero_grad()
-
+        # print("Forward pass...")
         y_pred = net(X)
-        loss = criterion(y_pred, y)
 
+        # Get network parameter tensor
+        parameters = torch.cat([param.view(-1) for param in net.parameters()])
+
+        # print("Computing loss...")
+        loss = criterion(y_pred, y, parameters)
+
+        # Compute the gradient
+        net.zero_grad()
+
+        # print("Backward pass...")
         loss.backward()
-        optimizer.step()
+
+        # Update the weights
+        # print("Update weights...")
+        with torch.no_grad():
+            for param in net.parameters():
+                step_size = backtracking_line_search(
+                    X=X,
+                    y=y,
+                    criterion=criterion,
+                    parameters=param,
+                    gradient=param.grad,
+                    direction=-param.grad,
+                )
+                param -= step_size * param.grad
 
         train_loss += loss.item()
         bools = (y_pred.squeeze() > 0) == y
         preds = torch.tensor([1 if b else 0 for b in bools]).float()
 
         epoch_accuracy += preds.mean().item()
+        counter += 1
 
-        if max_iters is not None and i >= max_iters:
+        if max_iters is not None and counter >= max_iters:
             break
-
     return train_loss / len(train_dataloader), epoch_accuracy / len(train_dataloader)
 
 
@@ -74,7 +152,9 @@ def test_step(test_dataloader, net, criterion):
             X = X.float().to(DEVICE)
             y = y.float().to(DEVICE)
             y_pred = net(X)
-            loss = criterion(y_pred, y)
+
+            parameters = torch.cat([param.view(-1) for param in net.parameters()])
+            loss = criterion(y_pred, y, parameters)
 
             test_loss += loss.item()
 
@@ -115,8 +195,12 @@ def train(
 
     for epoch in range(1, config["EPOCHS"] + 1):
         print(f"Start epoch {epoch}")
+        # train_loss, train_accuracy = train_epoch(
+        #     config, train_dataloader, net, optimizer, criterion
+        # )
+
         train_loss, train_accuracy = train_epoch(
-            config, train_dataloader, net, optimizer, criterion
+            config, train_dataloader, net, criterion
         )
 
         valid_loss, valid_accuracy = test_step(valid_dataloader, net, criterion)
@@ -167,6 +251,8 @@ if __name__ == "__main__":
     from dataset import EpsilonDataset
     from model import LinearModel
     from utils import SPLIT
+
+    EpsilonDataset.generate_agent_splits(CONFIG, seed=0)
 
     client_idx = 0
     train_dataset = EpsilonDataset(
