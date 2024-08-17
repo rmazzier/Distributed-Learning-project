@@ -2,9 +2,35 @@ import torch
 from torch import nn
 import numpy as np
 import os
+import matplotlib.pyplot as plt
+from random_fourier import RandomFourier
 
 from model import LinearModel
 from constants import DEVICE, CONFIG
+
+
+def BCELossWithLogits_simple(y_pred, y_true, params=None):
+    """
+    Binary Cross Entropy Loss
+    """
+    return nn.BCEWithLogitsLoss()(y_pred, y_true)
+
+
+def BCELossWithLogits_L2(y_pred, y_true, params, gamma=CONFIG["GAMMA"]):
+    """
+    Binary Cross Entropy Loss with L2 Regularization
+    """
+    params = params.squeeze()
+    l2norm = torch.dot(params, params)
+
+    return nn.BCEWithLogitsLoss()(y_pred, y_true) + gamma / 2 * l2norm
+
+
+def LRLoss_simple(y_pred, y_true, params=None):
+    """
+    Without L2 Regularization
+    """
+    return torch.log(1 + torch.exp(-y_pred * y_true)).mean()
 
 
 def LRLoss(y_pred, y_true, params, gamma=CONFIG["GAMMA"]):
@@ -21,66 +47,68 @@ def LRLoss(y_pred, y_true, params, gamma=CONFIG["GAMMA"]):
     return torch.log(1 + torch.exp(-y_pred * y_true)).mean() + gamma / 2 * l2norm
 
 
-# def train_epoch(
-#     config,
-#     train_dataloader,
-#     net,
-#     optimizer,
-#     criterion,
-#     max_iters=None,
-# ):
-#     """
-#     Train the model for one epoch
-#     """
+def train_epoch_old(
+    config,
+    train_dataloader,
+    net,
+    optimizer,
+    criterion,
+    max_iters=None,
+):
+    """
+    Train the model for one epoch
+    """
 
-#     net.train()
-#     train_loss = 0.0
-#     epoch_accuracy = 0.0
+    net.train()
+    train_loss = 0.0
+    epoch_accuracy = 0.0
 
-#     for i, (X, y) in enumerate(train_dataloader):
-#         if i % 100 == 0:
-#             print(f"Batch {i}")
-#         X = X.float().to(DEVICE)
-#         y = y.float().to(DEVICE)
+    for i, (X, y) in enumerate(train_dataloader):
+        if i % 100 == 0:
+            print(f"Batch {i}")
+        X = X.float().to(DEVICE)
+        y = y.float().to(DEVICE)
 
-#         optimizer.zero_grad()
+        optimizer.zero_grad()
 
-#         y_pred = net(X)
-#         loss = criterion(y_pred, y)
+        y_pred = net(X).squeeze()
+        loss = criterion(y_pred, y)
 
-#         loss.backward()
-#         optimizer.step()
+        loss.backward()
+        optimizer.step()
 
-#         train_loss += loss.item()
-#         bools = (y_pred.squeeze() > 0) == y
-#         preds = torch.tensor([1 if b else 0 for b in bools]).float()
+        train_loss += loss.item()
+        bools = torch.maximum(torch.zeros(len(y_pred)).to(DEVICE),
+                              torch.sign(y_pred)) == y
+        preds = torch.tensor([1 if b else 0 for b in bools]).float()
 
-#         epoch_accuracy += preds.mean().item()
+        epoch_accuracy += preds.mean().item()
 
-#         if max_iters is not None and i >= max_iters:
-#             break
+        if max_iters is not None and i >= max_iters:
+            break
 
-#     return train_loss / len(train_dataloader), epoch_accuracy / len(train_dataloader)
+    return train_loss / len(train_dataloader), epoch_accuracy / len(train_dataloader)
 
 
-def train_epoch(config, train_dataloader, net, criterion, max_iters=None):
+def train_epoch_SGD(config, train_dataloader, net, criterion, max_iters=None, RF=None):
 
     def backtracking_line_search(
         X, y, criterion, parameters, gradient, direction, c=0.1
     ):
-        candidates = [1.0, 0.1, 0.01, 0.001, 0.0001]
+        candidates = [10000, 1000, 100, 10, 1.0, 0.1, 0.01]
         for candidate in candidates:
             # Armijo - Goldstein condition
-            y_hat_old = torch.matmul(X, torch.transpose(parameters, 0, 1))
+            y_hat_old = torch.matmul(
+                X, torch.transpose(parameters, 0, 1)).squeeze()
             y_hat_new = torch.matmul(
                 X, torch.transpose(parameters + candidate * direction, 0, 1)
-            )
+            ).squeeze()
 
             if criterion(y_hat_new, y, parameters + candidate * direction) <= criterion(
                 y_hat_old, y, parameters
             ) + candidate * c * torch.dot(direction.squeeze(), gradient.squeeze()):
                 break
-        print(candidate)
+        # print(f"Step size: {candidate}")
         return candidate
 
     """Variation of train_epoch function, where I implement gradient descent by hand"""
@@ -90,15 +118,27 @@ def train_epoch(config, train_dataloader, net, criterion, max_iters=None):
 
     counter = 0
 
+    all_y = []
+    all_y_pred = []
+
     print("Start train dataloader for loop")
     for X, y in train_dataloader:
         if counter % 100 == 0:
             print(f"Batch {counter}")
-        X = X.float().to(DEVICE)
+        X = X.float()
         y = y.float().to(DEVICE)
 
+        if RF is not None:
+            RF.fit(X)
+            X = RF.transform(X)
+
+        X = torch.tensor(X).to(DEVICE).float()
+
         # print("Forward pass...")
-        y_pred = net(X)
+        y_pred = net(X).squeeze()
+
+        all_y.append(y.squeeze())
+        all_y_pred.append(y_pred)
 
         # Get network parameter tensor
         parameters = torch.cat([param.view(-1) for param in net.parameters()])
@@ -127,7 +167,8 @@ def train_epoch(config, train_dataloader, net, criterion, max_iters=None):
                 param -= step_size * param.grad
 
         train_loss += loss.item()
-        bools = (y_pred.squeeze() > 0) == y
+        bools = torch.maximum(torch.zeros(len(y_pred)).to(
+            DEVICE), torch.sign(y_pred.squeeze())) == y
         preds = torch.tensor([1 if b else 0 for b in bools]).float()
 
         epoch_accuracy += preds.mean().item()
@@ -135,10 +176,20 @@ def train_epoch(config, train_dataloader, net, criterion, max_iters=None):
 
         if max_iters is not None and counter >= max_iters:
             break
+
+    # Plot histogram of y and y_pred showing the distribution of the predictions and the true labels
+    # all_y = torch.cat(all_y).cpu().numpy()
+    # all_y_pred = torch.cat(all_y_pred).detach().cpu()
+    # all_y_pred = torch.sign(all_y_pred.squeeze()).numpy()
+
+    # plt.hist(all_y, bins=50, alpha=0.5, label="y")
+    # plt.hist(all_y_pred, bins=50, alpha=0.5, label="y_pred")
+    # plt.legend()
+    # plt.show()
     return train_loss / len(train_dataloader), epoch_accuracy / len(train_dataloader)
 
 
-def test_step(test_dataloader, net, criterion):
+def test_step(test_dataloader, net, criterion, RF=None):
     """
     Test the model on validation or test set
     """
@@ -149,16 +200,25 @@ def test_step(test_dataloader, net, criterion):
     with torch.no_grad():
 
         for i, (X, y) in enumerate(test_dataloader):
-            X = X.float().to(DEVICE)
+            X = X.float()
             y = y.float().to(DEVICE)
-            y_pred = net(X)
 
-            parameters = torch.cat([param.view(-1) for param in net.parameters()])
+            if RF is not None:
+                RF.fit(X)
+                X = RF.transform(X)
+
+            X = torch.tensor(X).to(DEVICE).float()
+
+            y_pred = net(X).squeeze()
+
+            parameters = torch.cat([param.view(-1)
+                                   for param in net.parameters()])
             loss = criterion(y_pred, y, parameters)
 
             test_loss += loss.item()
 
-            bools = (y_pred.squeeze() > 0) == y
+            bools = torch.maximum(torch.zeros(len(y_pred)).to(DEVICE),
+                                  torch.sign(y_pred.squeeze())) == y
             preds = torch.tensor([1 if b else 0 for b in bools]).float()
             test_accuracy += preds.mean().item()
 
@@ -171,6 +231,8 @@ def train(
     valid_dataloader,
     test_dataloader,
     net,
+
+
 ):
     """
     Centralized training loop
@@ -178,11 +240,21 @@ def train(
 
     # TODO: Check if we can actually use SGD or we need to do things by hand
     # (e.g. in the paper they use the line search method to determine the step size)
-    optimizer = torch.optim.SGD(
-        net.parameters(), lr=config["LEARNING_RATE"], weight_decay=config["GAMMA"]
+    # optimizer = torch.optim.SGD(
+    #     net.parameters(), lr=config["LEARNING_RATE"], weight_decay=config["GAMMA"]
+    # )
+    optimizer = torch.optim.Adam(
+        net.parameters(), lr=0.01, weight_decay=config["GAMMA"]
     )
 
-    criterion = LRLoss
+    # criterion = LRLoss_simple
+    criterion = BCELossWithLogits_L2
+
+    # Define Random Fourier transformation object if we are using it
+    if config["USE_RANDOM_FOURIER"]:
+        RF = RandomFourier(n_components=config["N_FOURIER_FEATURES"])
+    else:
+        RF = None
 
     best_valid_loss = float("inf")
     run_results_dir = os.path.join(config["RESULTS_DIR"], config["MODEL_NAME"])
@@ -199,11 +271,18 @@ def train(
         #     config, train_dataloader, net, optimizer, criterion
         # )
 
-        train_loss, train_accuracy = train_epoch(
-            config, train_dataloader, net, criterion
-        )
+        train_loss, train_accuracy = train_epoch_SGD(
+            config=config, train_dataloader=train_dataloader, criterion=criterion, net=net, RF=RF)
+        # train_loss, train_accuracy = train_epoch_old(
+        #     config=config,
+        #     train_dataloader=train_dataloader,
+        #     net=net,
+        #     optimizer=optimizer,
+        #     criterion=criterion
+        # )
 
-        valid_loss, valid_accuracy = test_step(valid_dataloader, net, criterion)
+        valid_loss, valid_accuracy = test_step(
+            valid_dataloader, net, criterion, RF)
 
         train_losses.append(train_loss)
         train_accuracies.append(train_accuracy)
@@ -287,7 +366,8 @@ if __name__ == "__main__":
         num_workers=os.cpu_count(),
     )
 
-    net = LinearModel(input_dim=2000).float().to(DEVICE)
+    input_dim = CONFIG["N_FOURIER_FEATURES"] if CONFIG["USE_RANDOM_FOURIER"] else 2000
+    net = LinearModel(input_dim=input_dim).float().to(DEVICE)
 
     (
         train_losses,
@@ -313,7 +393,8 @@ if __name__ == "__main__":
 
     # save the plot
     plt.savefig(
-        os.path.join(CONFIG["RESULTS_DIR"], CONFIG["MODEL_NAME"], "test_plot.png")
+        os.path.join(CONFIG["RESULTS_DIR"],
+                     CONFIG["MODEL_NAME"], "test_plot.png")
     )
 
     print(f"Test Loss: {test_loss}, Test Accuracy: {test_accuracy}")

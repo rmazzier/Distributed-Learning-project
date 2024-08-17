@@ -31,7 +31,7 @@ from flwr.common import (
 
 
 from constants import DEVICE, CONFIG
-from train import train_epoch, test_step, setup_training
+from train import train_epoch_SGD, test_step, setup_training
 
 """
 We need two helper functions to update the local model with parameters received from
@@ -97,7 +97,7 @@ class FlowerClient(fl.client.NumPyClient):
     def fit(self, parameters, config):
         print("Fitting client")
         set_parameters(self.net, parameters)
-        train_loss, _, _ = train_epoch(
+        train_loss, _, _ = train_epoch_SGD(
             self.my_config,
             self.trainloader,
             self.valloader,
@@ -117,7 +117,8 @@ class FlowerClient(fl.client.NumPyClient):
         print("Evaluating client")
 
         set_parameters(self.net, parameters)
-        valid_loss, valid_rmse = test_step(self.valloader, self.net, self.criterion)
+        valid_loss, valid_rmse = test_step(
+            self.valloader, self.net, self.criterion)
         return (
             float(valid_loss),
             len(self.valloader),
@@ -131,7 +132,8 @@ def client_fn(cid, config) -> FlowerClient:
     print(f"Creating client {cid}")
 
     cid = int(cid)
-    train_loader, valid_loader, _, _, net = setup_training(config, agent_idx=cid)
+    train_loader, valid_loader, _, _, net = setup_training(
+        config, agent_idx=cid)
 
     # Load model
     net = net.to(DEVICE)
@@ -196,7 +198,8 @@ class FedAvgWandb(fl.server.strategy.FedAvg):
             ]
         ] = None,
         on_fit_config_fn: Optional[Callable[[int], Dict[str, Scalar]]] = None,
-        on_evaluate_config_fn: Optional[Callable[[int], Dict[str, Scalar]]] = None,
+        on_evaluate_config_fn: Optional[Callable[[
+            int], Dict[str, Scalar]]] = None,
         initial_parameters: Optional[Parameters] = None,
         accept_failures: bool = True,
         fit_metrics_aggregation_fn: Optional[MetricsAggregationFn] = None,
@@ -283,7 +286,8 @@ class FedProxWandb(fl.server.strategy.FedProx):
             ]
         ] = None,
         on_fit_config_fn: Optional[Callable[[int], Dict[str, Scalar]]] = None,
-        on_evaluate_config_fn: Optional[Callable[[int], Dict[str, Scalar]]] = None,
+        on_evaluate_config_fn: Optional[Callable[[
+            int], Dict[str, Scalar]]] = None,
         initial_parameters: Optional[Parameters] = None,
         accept_failures: bool = True,
         fit_metrics_aggregation_fn: Optional[MetricsAggregationFn] = None,

@@ -8,7 +8,10 @@ class LinearModel(torch.nn.Module):
 
     def __init__(self, input_dim):
         super(LinearModel, self).__init__()
-        self.linear = torch.nn.Linear(input_dim, 1, bias=False)
+        # self.layer1 = torch.nn.Linear(input_dim, 4096, bias=True)
+        self.output = torch.nn.Linear(input_dim, 1, bias=False)
 
     def forward(self, x):
-        return self.linear(x)
+        # x = self.layer1(x)
+        # x = torch.relu(x)
+        return self.output(x)
