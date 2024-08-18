@@ -3,6 +3,8 @@ import wandb
 import os
 import json
 
+from dataset import EpsilonDataset
+
 from flwr.client import ClientApp
 from flwr.server import ServerApp
 from flwr.simulation import run_simulation
@@ -20,7 +22,7 @@ from fl_setup import (
 from train import setup_training
 
 
-def train_federated(config, client, server, strategy, n_rounds):
+def train_federated(config, client, server):
     NUM_CLIENTS = config["N_CLIENTS"]
     # Specify the resources each of your clients need. By default, each
     # client will be allocated 1x CPU and 0x GPUs
@@ -92,6 +94,8 @@ def train_federated(config, client, server, strategy, n_rounds):
 if __name__ == "__main__":
     from constants import CONFIG
 
+    EpsilonDataset.generate_agent_splits(CONFIG)
+
     # Create FedAvg strategy
     strategy = FedAvgWandb(
         my_config=CONFIG,
@@ -107,6 +111,8 @@ if __name__ == "__main__":
 
     # Create the ClientApp and Serverapp
     client = ClientApp(client_fn=lambda x: client_fn(x, CONFIG))
-    server = ServerApp(server_fn=lambda x: server_fn(x, strategy))
+    server = ServerApp(
+        server_fn=lambda x: server_fn(x, strategy, rounds=CONFIG["NUM_ROUNDS"])
+    )
 
-    train_federated(CONFIG, client, server, strategy, n_rounds=20)
+    train_federated(CONFIG, client, server)

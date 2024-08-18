@@ -162,7 +162,7 @@ def client_fn(context: Context, config) -> FlowerClient:
     ).to_client()
 
 
-def server_fn(context: Context, strategy) -> ServerAppComponents:
+def server_fn(context: Context, strategy, rounds) -> ServerAppComponents:
     """Construct components that set the ServerApp behaviour.
 
     You can use the settings in `context.run_config` to parameterize the
@@ -171,7 +171,7 @@ def server_fn(context: Context, strategy) -> ServerAppComponents:
     """
 
     # Configure the server for 5 rounds of training
-    config = ServerConfig(num_rounds=5)
+    config = ServerConfig(num_rounds=rounds)
 
     return ServerAppComponents(strategy=strategy, config=config)
 

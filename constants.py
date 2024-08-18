@@ -18,6 +18,7 @@ CONFIG = {
     # (Train, Validation), test is already separated
     "SPLIT_SIZES": [0.8, 0.2],
     "EPOCHS": 20,
+    "NUM_ROUNDS": 10,
     "BATCH_SIZE": 128,
     "GAMMA": 0.0001,
     "USE_RANDOM_FOURIER": False,
