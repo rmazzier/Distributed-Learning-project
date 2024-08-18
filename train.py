@@ -78,8 +78,9 @@ def train_epoch_old(
         optimizer.step()
 
         train_loss += loss.item()
-        bools = torch.maximum(torch.zeros(len(y_pred)).to(DEVICE),
-                              torch.sign(y_pred)) == y
+        bools = (
+            torch.maximum(torch.zeros(len(y_pred)).to(DEVICE), torch.sign(y_pred)) == y
+        )
         preds = torch.tensor([1 if b else 0 for b in bools]).float()
 
         epoch_accuracy += preds.mean().item()
@@ -98,8 +99,7 @@ def train_epoch_SGD(config, train_dataloader, net, criterion, max_iters=None, RF
         candidates = [10000, 1000, 100, 10, 1.0, 0.1, 0.01]
         for candidate in candidates:
             # Armijo - Goldstein condition
-            y_hat_old = torch.matmul(
-                X, torch.transpose(parameters, 0, 1)).squeeze()
+            y_hat_old = torch.matmul(X, torch.transpose(parameters, 0, 1)).squeeze()
             y_hat_new = torch.matmul(
                 X, torch.transpose(parameters + candidate * direction, 0, 1)
             ).squeeze()
@@ -167,8 +167,12 @@ def train_epoch_SGD(config, train_dataloader, net, criterion, max_iters=None, RF
                 param -= step_size * param.grad
 
         train_loss += loss.item()
-        bools = torch.maximum(torch.zeros(len(y_pred)).to(
-            DEVICE), torch.sign(y_pred.squeeze())) == y
+        bools = (
+            torch.maximum(
+                torch.zeros(len(y_pred)).to(DEVICE), torch.sign(y_pred.squeeze())
+            )
+            == y
+        )
         preds = torch.tensor([1 if b else 0 for b in bools]).float()
 
         epoch_accuracy += preds.mean().item()
@@ -211,14 +215,17 @@ def test_step(test_dataloader, net, criterion, RF=None):
 
             y_pred = net(X).squeeze()
 
-            parameters = torch.cat([param.view(-1)
-                                   for param in net.parameters()])
+            parameters = torch.cat([param.view(-1) for param in net.parameters()])
             loss = criterion(y_pred, y, parameters)
 
             test_loss += loss.item()
 
-            bools = torch.maximum(torch.zeros(len(y_pred)).to(DEVICE),
-                                  torch.sign(y_pred.squeeze())) == y
+            bools = (
+                torch.maximum(
+                    torch.zeros(len(y_pred)).to(DEVICE), torch.sign(y_pred.squeeze())
+                )
+                == y
+            )
             preds = torch.tensor([1 if b else 0 for b in bools]).float()
             test_accuracy += preds.mean().item()
 
@@ -231,8 +238,6 @@ def train(
     valid_dataloader,
     test_dataloader,
     net,
-
-
 ):
     """
     Centralized training loop
@@ -272,7 +277,12 @@ def train(
         # )
 
         train_loss, train_accuracy = train_epoch_SGD(
-            config=config, train_dataloader=train_dataloader, criterion=criterion, net=net, RF=RF)
+            config=config,
+            train_dataloader=train_dataloader,
+            criterion=criterion,
+            net=net,
+            RF=RF,
+        )
         # train_loss, train_accuracy = train_epoch_old(
         #     config=config,
         #     train_dataloader=train_dataloader,
@@ -281,8 +291,7 @@ def train(
         #     criterion=criterion
         # )
 
-        valid_loss, valid_accuracy = test_step(
-            valid_dataloader, net, criterion, RF)
+        valid_loss, valid_accuracy = test_step(valid_dataloader, net, criterion, RF)
 
         train_losses.append(train_loss)
         train_accuracies.append(train_accuracy)
@@ -321,6 +330,48 @@ def train(
         test_loss,
         test_accuracy,
     )
+
+
+def setup_training(config, client_idx=-1):
+    train_dataset = EpsilonDataset(
+        config=config, client_idx=client_idx, split=SPLIT.TRAIN
+    )
+    train_loader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=config["BATCH_SIZE"],
+        shuffle=True,
+        drop_last=True,
+        num_workers=os.cpu_count(),
+    )
+
+    valid_dataset = EpsilonDataset(
+        config=config, client_idx=client_idx, split=SPLIT.VALIDATION
+    )
+    valid_loader = torch.utils.data.DataLoader(
+        valid_dataset,
+        batch_size=config["BATCH_SIZE"],
+        shuffle=False,
+        drop_last=True,
+        num_workers=os.cpu_count(),
+    )
+
+    test_dataset = EpsilonDataset(
+        config=config, client_idx=client_idx, split=SPLIT.TEST
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=config["BATCH_SIZE"],
+        shuffle=False,
+        drop_last=True,
+        num_workers=os.cpu_count(),
+    )
+
+    # Get the input size by sampling a single sample
+    input_size = next(iter(train_loader))[0][0].shape[-1]
+
+    net = LinearModel(input_size).to(DEVICE)
+
+    return train_loader, valid_loader, test_dataset, test_loader, net
 
 
 if __name__ == "__main__":
@@ -393,8 +444,7 @@ if __name__ == "__main__":
 
     # save the plot
     plt.savefig(
-        os.path.join(CONFIG["RESULTS_DIR"],
-                     CONFIG["MODEL_NAME"], "test_plot.png")
+        os.path.join(CONFIG["RESULTS_DIR"], CONFIG["MODEL_NAME"], "test_plot.png")
     )
 
     print(f"Test Loss: {test_loss}, Test Accuracy: {test_accuracy}")

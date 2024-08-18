@@ -14,13 +14,13 @@ CONFIG = {
     "GEN_DATA_DIR": os.path.join("data", "samples"),
     "RESULTS_DIR": os.path.join("results"),
     # Dataset parameters
-    "N_CLIENTS": 1,
+    "N_CLIENTS": 20,
     # (Train, Validation), test is already separated
     "SPLIT_SIZES": [0.8, 0.2],
     "EPOCHS": 20,
     "BATCH_SIZE": 128,
     "GAMMA": 0.0001,
-    "USE_RANDOM_FOURIER": True,
+    "USE_RANDOM_FOURIER": False,
     "N_FOURIER_FEATURES": 10000,
     # --- WANDB VARIABLES ---
     "MODEL_NAME": "FirstTest8",
