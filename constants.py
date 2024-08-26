@@ -15,6 +15,7 @@ CONFIG = {
     "RESULTS_DIR": os.path.join("results"),
     # Dataset parameters
     "N_CLIENTS": 20,
+    "MAX_CLIENT_ITERS": 50,
     # (Train, Validation), test is already separated
     "SPLIT_SIZES": [0.8, 0.2],
     "EPOCHS": 20,

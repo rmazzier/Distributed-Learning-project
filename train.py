@@ -5,23 +5,35 @@ import os
 import matplotlib.pyplot as plt
 from random_fourier import RandomFourier
 
+from typing import List
+
 from model import LinearModel
 from constants import DEVICE, CONFIG
 
 
-def BCELossWithLogits_simple(y_pred, y_true, params=None):
+def BCELossWithLogits_simple(y_pred, y_true, params=None, gamma=None):
     """
     Binary Cross Entropy Loss
     """
     return nn.BCEWithLogitsLoss()(y_pred, y_true)
 
 
-def BCELossWithLogits_L2(y_pred, y_true, params, gamma=CONFIG["GAMMA"]):
+def BCELossWithLogits_simple_dxx(y_pred, y_true=None, params=None, gamma=None):
+    """
+    Second derivative of the Binary Cross Entropy Loss
+    """
+    return torch.exp(y_pred) / (1 + torch.exp(y_pred)) ** 2
+
+
+def BCELossWithLogits_L2(y_pred, y_true, params, gamma):
     """
     Binary Cross Entropy Loss with L2 Regularization
     """
-    params = params.squeeze()
-    l2norm = torch.dot(params, params)
+    # params = params.squeeze()
+    # l2norm = torch.dot(params, params)
+    l2norm = 0
+    for param in params:
+        l2norm += torch.linalg.vector_norm(param, ord=2) ** 2
 
     return nn.BCEWithLogitsLoss()(y_pred, y_true) + gamma / 2 * l2norm
 
@@ -91,7 +103,7 @@ def train_epoch_old(
     return train_loss / len(train_dataloader), epoch_accuracy / len(train_dataloader)
 
 
-def train_epoch_SGD(config, train_dataloader, net, criterion, max_iters=None, RF=None):
+def train_epoch_SGD(config, train_dataloader, net, criterion, RF=None):
 
     def backtracking_line_search(
         X, y, criterion, parameters, gradient, direction, c=0.1
@@ -178,7 +190,10 @@ def train_epoch_SGD(config, train_dataloader, net, criterion, max_iters=None, RF
         epoch_accuracy += preds.mean().item()
         counter += 1
 
-        if max_iters is not None and counter >= max_iters:
+        if (
+            config["MAX_CLIENT_ITERS"] is not None
+            and counter >= config["MAX_CLIENT_ITERS"]
+        ):
             break
 
     # Plot histogram of y and y_pred showing the distribution of the predictions and the true labels

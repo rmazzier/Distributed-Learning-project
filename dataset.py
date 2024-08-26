@@ -55,8 +55,7 @@ class EpsilonDataset(torch.utils.data.Dataset):
         print("Saving training samples")
         for i in tqdm(range(len(data))):
             x, y = get_epsilon_sample(i, data)
-            save_path = os.path.join(
-                "data", "epsilon", "samples", f"eps_{i}_{y}")
+            save_path = os.path.join("data", "epsilon", "samples", f"eps_{i}_{y}")
             np.save(save_path, x)
 
         print("Reading raw test data file")
@@ -66,8 +65,7 @@ class EpsilonDataset(torch.utils.data.Dataset):
         print("Saving test samples")
         for i in tqdm(range(len(data))):
             x, y = get_epsilon_sample(i, data)
-            save_path = os.path.join(
-                "data", "epsilon", "samples", f"eps_test_{i}_{y}")
+            save_path = os.path.join("data", "epsilon", "samples", f"eps_test_{i}_{y}")
             np.save(save_path, x)
 
     @staticmethod
@@ -82,8 +80,7 @@ class EpsilonDataset(torch.utils.data.Dataset):
         # Remove existing folders containing the "agent" subword and all its contents
         for folder in os.listdir(config["EPSILON_DATASET_PATH"]):
             if "agent" in folder:
-                folder_path = os.path.join(
-                    config["EPSILON_DATASET_PATH"], folder)
+                folder_path = os.path.join(config["EPSILON_DATASET_PATH"], folder)
                 for file in os.listdir(folder_path):
                     os.remove(os.path.join(folder_path, file))
                 os.rmdir(folder_path)
@@ -94,8 +91,7 @@ class EpsilonDataset(torch.utils.data.Dataset):
         test_samples = [s for s in all_samples if "test" in s]
 
         samples_per_agent_train = int(
-            (len(train_samples) //
-             config["N_CLIENTS"]) * config["SPLIT_SIZES"][0]
+            (len(train_samples) // config["N_CLIENTS"]) * config["SPLIT_SIZES"][0]
         )
         samples_per_agent_valid = (
             len(train_samples) // config["N_CLIENTS"]
@@ -163,6 +159,7 @@ class EpsilonDataset(torch.utils.data.Dataset):
 
         # Extract the label from the filename
         label = max(0, int(fname.split("_")[-1].split(".")[0]))
+        # label = int(fname.split("_")[-1].split(".")[0])
 
         # Load the sample
         features = np.load(sample)
@@ -172,12 +169,9 @@ class EpsilonDataset(torch.utils.data.Dataset):
 
 if __name__ == "__main__":
 
-    dataset_train = EpsilonDataset(
-        config=CONFIG, client_idx=0, split=SPLIT.TRAIN)
-    dataset_valid = EpsilonDataset(
-        config=CONFIG, client_idx=0, split=SPLIT.VALIDATION)
-    dataset_test = EpsilonDataset(
-        config=CONFIG, client_idx=0, split=SPLIT.TEST)
+    dataset_train = EpsilonDataset(config=CONFIG, client_idx=0, split=SPLIT.TRAIN)
+    dataset_valid = EpsilonDataset(config=CONFIG, client_idx=0, split=SPLIT.VALIDATION)
+    dataset_test = EpsilonDataset(config=CONFIG, client_idx=0, split=SPLIT.TEST)
 
     print(len(dataset_train))
     print(len(dataset_valid))

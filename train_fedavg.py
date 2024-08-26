@@ -9,7 +9,7 @@ from flwr.client import ClientApp
 from flwr.server import ServerApp
 from flwr.simulation import run_simulation
 from constants import DEVICE, CONFIG
-from fl_setup import (
+from flower_setup import (
     client_fn,
     server_fn,
     fit_config,
