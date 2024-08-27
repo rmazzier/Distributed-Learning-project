@@ -9,6 +9,7 @@ from typing import List
 
 from model import LinearModel
 from constants import DEVICE, CONFIG
+from utils import backtracking_line_search
 
 
 def BCELossWithLogits_simple(y_pred, y_true, params=None, gamma=None):
@@ -104,25 +105,6 @@ def train_epoch_old(
 
 
 def train_epoch_SGD(config, train_dataloader, net, criterion, RF=None):
-
-    def backtracking_line_search(
-        X, y, criterion, parameters, gradient, direction, c=0.1
-    ):
-        candidates = [10000, 1000, 100, 10, 1.0, 0.1, 0.01]
-        for candidate in candidates:
-            # Armijo - Goldstein condition
-            y_hat_old = torch.matmul(X, torch.transpose(parameters, 0, 1)).squeeze()
-            y_hat_new = torch.matmul(
-                X, torch.transpose(parameters + candidate * direction, 0, 1)
-            ).squeeze()
-
-            if criterion(y_hat_new, y, parameters + candidate * direction) <= criterion(
-                y_hat_old, y, parameters
-            ) + candidate * c * torch.dot(direction.squeeze(), gradient.squeeze()):
-                break
-        # print(f"Step size: {candidate}")
-        return candidate
-
     """Variation of train_epoch function, where I implement gradient descent by hand"""
     net.train()
     train_loss = 0.0
@@ -258,14 +240,9 @@ def train(
     Centralized training loop
     """
 
-    # TODO: Check if we can actually use SGD or we need to do things by hand
-    # (e.g. in the paper they use the line search method to determine the step size)
-    # optimizer = torch.optim.SGD(
-    #     net.parameters(), lr=config["LEARNING_RATE"], weight_decay=config["GAMMA"]
+    # optimizer = torch.optim.Adam(
+    #     net.parameters(), lr=0.01, weight_decay=config["GAMMA"]
     # )
-    optimizer = torch.optim.Adam(
-        net.parameters(), lr=0.01, weight_decay=config["GAMMA"]
-    )
 
     # criterion = LRLoss_simple
     criterion = BCELossWithLogits_L2

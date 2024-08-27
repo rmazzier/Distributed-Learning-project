@@ -13,7 +13,7 @@ from scipy.sparse.linalg import cg
 import matplotlib.pyplot as plt
 
 
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 from collections import OrderedDict
 
 from constants import CONFIG, DEVICE
@@ -23,6 +23,7 @@ from model import LinearModel
 from train import (
     LRLoss_simple,
     train_epoch_SGD,
+    BCELossWithLogits_L2,
     BCELossWithLogits_simple,
     BCELossWithLogits_simple_dxx,
 )
@@ -87,23 +88,24 @@ class Client:
 
         return train_loader, valid_loader, test_loader, input_dim
 
-    def set_parameters(self, parameters: List[np.ndarray]):
+    def set_parameters(self, parameters: torch.Tensor) -> None:
         """
         Set the parameters of the network.
         This is used to set the global parameters to a client.
         """
+        parameters = [parameters.detach().cpu().numpy()]
         params_dict = zip(self.net.state_dict().keys(), parameters)
         state_dict = OrderedDict({k: torch.Tensor(v) for k, v in params_dict})
         self.net.load_state_dict(state_dict, strict=True)
 
-    def get_parameters(self) -> List[np.ndarray]:
+    def get_parameters(self) -> torch.Tensor:
         """
         Get the parameters of the network.
         """
+        params = [val.cpu().numpy() for _, val in self.net.state_dict().items()][0]
+        return torch.tensor(params)
 
-        return [val.cpu().numpy() for _, val in self.net.state_dict().items()]
-
-    def compute_local_gradient(self, is_byzantine=False) -> List[np.ndarray]:
+    def compute_local_gradient(self, is_byzantine=False, max_iters=None) -> None:
         """
         Compute the gradient from the local dataset.
         """
@@ -115,12 +117,14 @@ class Client:
         # i.e. we do not need to zero the gradients at each iteration.
         self.net.zero_grad()
 
-        counter = 0
+        for i, (X, y) in enumerate(self.train_dataloader):
+            if max_iters is not None and (i + 1) > max_iters:
+                print("Max iters reached")
+                break
 
-        print("Start train dataloader for loop")
-        for X, y in self.train_dataloader:
-            if counter % 10 == 0:
-                print(f"Client {self.client_idx}, Batch {counter}")
+            if (i + 1) % 10 == 0:
+                print(f"Client {self.client_idx}, Batch {i + 1}")
+
             X = X.float().to(DEVICE)
             y = y.float().to(DEVICE)
 
@@ -135,9 +139,6 @@ class Client:
             loss = self.criterion(y_pred, y) + self.config["GAMMA"] / 2 * l2_norm
 
             loss.backward()
-
-            counter += 1
-
         # Set the local gradient member variable to the accumulated gradient
         if is_byzantine:
             # return random stuff (check again)
@@ -149,7 +150,7 @@ class Client:
             lg = [param.grad.cpu() for param in self.net.parameters()]
             self.local_gradient = torch.cat(lg, dim=0).to(DEVICE)
 
-    def compute_ant(self, aggregated_gradient: torch.Tensor) -> List[np.ndarray]:
+    def compute_ant(self, aggregated_gradient: torch.Tensor, max_iters=None) -> None:
 
         # Compute the Hessian of the loss function
         self.net.train()
@@ -157,11 +158,12 @@ class Client:
 
         ajs = []
 
-        counter = 0
-
-        for X, y in self.train_dataloader:
-            if counter % 10 == 0:
-                print(f"(ANT-Pass) Client {self.client_idx}, Batch {counter}")
+        for i, (X, y) in enumerate(self.train_dataloader):
+            if max_iters is not None and (i + 1) > max_iters:
+                print("Max iters reached")
+                break
+            if i % 10 == 0:
+                print(f"(ANT-Pass) Client {self.client_idx}, Batch {i}")
             X = X.float().to(DEVICE)
             y = y.float().to(DEVICE)
 
@@ -172,7 +174,7 @@ class Client:
             ajs_batch = torch.sqrt(dxx_l) * X
 
             ajs.append(ajs_batch)
-            counter += 1
+            i += 1
 
         A_j = torch.cat(ajs, dim=0).to(DEVICE)
         s = len(self.train_dataloader) * self.config["BATCH_SIZE"]
@@ -191,37 +193,293 @@ class Client:
 
         # Set the ant member variable to the computed ant
         self.ant = torch.tensor(ant).squeeze().to(DEVICE)
-        pass
+
+    def get_bls_losses(
+        self, candidates: List[float], descent_direction: torch.Tensor, c=0.1
+    ) -> torch.Tensor:
+        """
+        Compute losses for different step sizes.
+        """
+        bls_losses = []
+
+        for candidate in candidates:
+            # print(f"Candidate {candidate}")
+            l = 0
+            for X, y in self.train_dataloader:
+                X = X.float().to(DEVICE)
+                y = y.float().to(DEVICE)
+
+                # Get the current parameters as tensor
+                parameters = torch.cat(
+                    [param.flatten() for param in self.net.parameters()]
+                )
+
+                new_candidate_params = parameters + candidate * descent_direction
+
+                y_hat_new = torch.matmul(
+                    X, torch.transpose(new_candidate_params.unsqueeze(0), 0, 1)
+                ).squeeze()
+
+                l += (
+                    self.criterion(y_hat_new, y)
+                    + self.config["GAMMA"]
+                    * 0.5
+                    * torch.linalg.vector_norm(new_candidate_params, ord=2) ** 2
+                )
+
+            l = l / len(self.train_dataloader)
+            bls_losses.append(l)
+        return torch.tensor(bls_losses)
+
+    def compute_local_loss(self, split: SPLIT) -> float:
+        """
+        Compute the loss from the local dataset.
+        """
+        self.net.eval()
+        if split == SPLIT.TRAIN:
+            dataloader = self.train_dataloader
+        elif split == SPLIT.VALIDATION:
+            dataloader = self.valid_dataloader
+        elif split == SPLIT.TEST:
+            dataloader = self.test_dataloader
+
+        with torch.no_grad():
+            loss = 0
+
+            for X, y in dataloader:
+                X = X.float().to(DEVICE)
+                y = y.float().to(DEVICE)
+
+                y_pred = self.net(X).squeeze()
+
+                l2_norm = 0
+                for param in self.net.parameters():
+                    l2_norm += torch.linalg.vector_norm(param, ord=2) ** 2
+
+                loss += self.criterion(y_pred, y) + self.config["GAMMA"] / 2 * l2_norm
+            loss = loss / len(dataloader)
+        return loss
+
+    def compute_local_accuracy(self, split: SPLIT) -> float:
+        """
+        Compute the accuracy from the local dataset.
+        """
+        self.net.eval()
+        if split == SPLIT.TRAIN:
+            dataloader = self.train_dataloader
+        elif split == SPLIT.VALIDATION:
+            dataloader = self.valid_dataloader
+        elif split == SPLIT.TEST:
+            dataloader = self.test_dataloader
+
+        with torch.no_grad():
+            correct = 0
+            total = 0
+
+            for X, y in dataloader:
+                X = X.float().to(DEVICE)
+                y = y.float().to(DEVICE)
+
+                y_pred = self.net(X).squeeze()
+
+                correct += (y_pred > 0.5).eq(y > 0.5).sum().item()
+                total += y.shape[0]
+
+            accuracy = correct / total
+        return accuracy
 
 
 class Server:
-    def __init__(self, config) -> None:
+    def __init__(self, config, start_parameters=None) -> None:
         self.config = config
-        self.clients = self.initialize_clients(config)
-        pass
+        self.current_params = start_parameters
 
-    def initialize_clients(self, config):
-        return [Client(config, i) for i in range(config["N_CLIENTS"])]
+    def aggregate_gradients(self, local_gradients: torch.Tensor) -> torch.Tensor:
+        return torch.mean(local_gradients, axis=0)
 
-    def aggregate_gradients(self):
-        local_gradients = [client.local_gradient for client in self.clients]
-        # return np.sum(local_gradients, axis=0)
-        return np.mean(local_gradients, axis=0)
-
-    def aggregate_ants(self):
+    def aggregate_ants(self, local_ants: torch.Tensor) -> torch.Tensor:
         """
         Aggregate the approximate newton directions from the clients.
         i.e. Compute the GIANT (Globally Improved Approximate Newton Direction)
         """
-        ants = [client.ant for client in self.clients]
-        return np.mean(ants, axis=0)
+        return torch.mean(local_ants, axis=0)
+
+    def send_params_to_clients(self, clients: List[Client]) -> None:
+        """
+        Sync the global model parameters with the clients.
+        """
+        if self.current_params is None:
+            self.current_params = clients[0].get_parameters()
+        for client in clients:
+            client.set_parameters(self.current_params)
+
+
+# This class serves as an interface for the different strategies
+class Strategy:
+    def __init__(self) -> None:
+        pass
+
+    def fit_step(self, server: Server, clients: List[Client]) -> None:
+        """
+        A single fit step, where parameters of the global model are updated.
+        """
+        # To be implemented in the subclasses
+        raise NotImplementedError
+
+    def eval_step(self, server: Server, clients: List[Client]) -> None:
+        """
+        A single evaluation step, where the global model is evaluated.
+        """
+        # To be implemented in the subclasses
+        raise NotImplementedError
+
+
+class GIANT(Strategy):
+    def __init__(self) -> None:
+        super().__init__()
+
+    def fit_step(self, server: Server, clients: List[Client]) -> None:
+        print("Starting GIANT fit step")
+        ## Single iteration of the GIANT algorithm
+
+        # FIRST COMMUNICATION ROUND
+        for client in clients:
+            client.compute_local_gradient(max_iters=10)
+
+        gradient = server.aggregate_gradients(
+            torch.stack([client.local_gradient.squeeze() for client in clients], dim=0)
+        )
+
+        # SECOND COMMUNICATION ROUND
+        for client in clients:
+            client.compute_ant(gradient, max_iters=10)
+
+        newton_direction = server.aggregate_ants(
+            torch.stack([client.ant.squeeze() for client in clients], dim=0)
+        )
+
+        # OPTIMIZATION STEP (i.e. final iteration of the Newton method)
+        # NB: Requires two additional communication rounds
+        step_size = self.backtracking_ls(clients, gradient, newton_direction)
+        print(f"Step size = {step_size}")
+        server.current_params = server.current_params - step_size * newton_direction
+
+        # Communicate the new parameters to the clients
+        server.send_params_to_clients(clients)
+
+    def backtracking_ls(
+        self,
+        clients: List[Client],
+        gradient: torch.Tensor,
+        descent_direction: torch.Tensor,
+    ) -> float:
+        """
+        Returns the optimal step size with Backtracking line search.
+        """
+        candidates = [1.0, 0.1, 0.01, 0.001, 0.0001]
+
+        candidate_losses = []
+        local_losses = []
+        for client in clients:
+            candidate_losses.append(
+                client.get_bls_losses(candidates, descent_direction, c=0.1)
+            )
+            local_losses.append(client.compute_local_loss(SPLIT.TRAIN))
+
+        candidate_losses = torch.stack(
+            candidate_losses, dim=0
+        )  # shape = (n_clients, n_candidates)
+
+        local_losses = torch.tensor(local_losses)
+
+        # Reduce operation, aka take the mean for each candidate
+        mean_bls_losses = torch.mean(candidate_losses, axis=0)
+
+        # Armijo-Goldstein condition
+        for i, candidate_loss in enumerate(mean_bls_losses):
+            if candidate_loss <= local_losses.mean() + candidates[i] * 0.1 * torch.dot(
+                descent_direction.squeeze(), gradient.squeeze()
+            ):
+                break
+
+        return candidates[i]
+
+
+class FedAvg(Strategy):
+    def __init__(self) -> None:
+        super().__init__()
+        pass
+
+
+class Simulation:
+    def __init__(
+        self, config, strategy: Strategy, n_clients: int, start_parameters=None
+    ) -> None:
+        self.config = config
+        self.strategy = strategy
+
+        self.clients = [Client(config, i) for i in range(n_clients)]
+        self.server = Server(config, start_parameters)
+
+        # Equalize the parameters of all the clients
+        self.server.send_params_to_clients(self.clients)
+
+    def start_simulation(self, n_rounds: int) -> None:
+        for round in range(n_rounds):
+            print(f"Starting Round {round}")
+            self.strategy.fit_step(self.server, self.clients)
+
+            train_loss, train_accuracy, valid_loss, valid_accuracy = (
+                self.federated_evaluation()
+            )
+
+            print(
+                f"Train Loss: {train_loss}, Train Accuracy: {train_accuracy}, Valid Loss: {valid_loss}, Valid Accuracy: {valid_accuracy}"
+            )
+
+        # Final Test step here (i.e. take mean of accuracies and losses)
+        print("Final Test step")
+        test_loss = 0
+        test_accuracy = 0
+
+        for client in self.clients:
+            test_loss += client.compute_local_loss(SPLIT.TEST)
+            test_accuracy += client.compute_local_accuracy(SPLIT.TEST)
+
+        test_loss = test_loss / len(self.clients)
+        test_accuracy = test_accuracy / len(self.clients)
+
+        print(f"Test Loss: {test_loss}, Test Accuracy: {test_accuracy}")
+
+    def federated_evaluation(self):
+        # Get training set loss and accuracy
+        train_loss = 0
+        train_accuracy = 0
+
+        for client in self.clients:
+            train_loss += client.compute_local_loss(SPLIT.TRAIN)
+            train_accuracy += client.compute_local_accuracy(SPLIT.TRAIN)
+
+        train_loss = train_loss / len(self.clients)
+        train_accuracy = train_accuracy / len(self.clients)
+
+        # Get validation set loss and accuracy
+        valid_loss = 0
+        valid_accuracy = 0
+
+        for client in self.clients:
+            valid_loss += client.compute_local_loss(SPLIT.VALIDATION)
+            valid_accuracy += client.compute_local_accuracy(SPLIT.VALIDATION)
+
+        valid_loss = valid_loss / len(self.clients)
+        valid_accuracy = valid_accuracy / len(self.clients)
+        return train_loss, train_accuracy, valid_loss, valid_accuracy
 
 
 if __name__ == "__main__":
 
-    client_test = Client(CONFIG, 0)
-    client_test.compute_local_gradient()
-    local_grad = client_test.local_gradient
-    params = client_test.get_parameters()
+    strategy = GIANT()
 
-    client_test.compute_ant(local_grad)
+    sim = Simulation(config=CONFIG, strategy=strategy, n_clients=3)
+
+    sim.start_simulation(n_rounds=10)
