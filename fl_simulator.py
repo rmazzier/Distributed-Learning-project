@@ -44,7 +44,7 @@ class Client:
         ) = self.initialize_local_datasets(config, client_idx)
 
         # Initialize the model
-        self.net = LinearModel(input_dim)
+        self.net = LinearModel(input_dim).to(DEVICE)
 
         # Initialize Approximate newton direction member variable
         self.ant: torch.Tensor = None
@@ -102,8 +102,9 @@ class Client:
         """
         Get the parameters of the network.
         """
-        params = [val.cpu().numpy() for _, val in self.net.state_dict().items()][0]
-        return torch.tensor(params)
+        params = [val.cpu().numpy()
+                  for _, val in self.net.state_dict().items()][0]
+        return torch.tensor(params).to(DEVICE)
 
     def compute_local_gradient(self, is_byzantine=False, max_iters=None) -> None:
         """
@@ -136,7 +137,8 @@ class Client:
             for param in self.net.parameters():
                 l2_norm += torch.linalg.vector_norm(param, ord=2) ** 2
 
-            loss = self.criterion(y_pred, y) + self.config["GAMMA"] / 2 * l2_norm
+            loss = self.criterion(y_pred, y) + \
+                self.config["GAMMA"] / 2 * l2_norm
 
             loss.backward()
         # Set the local gradient member variable to the accumulated gradient
@@ -256,7 +258,8 @@ class Client:
                 for param in self.net.parameters():
                     l2_norm += torch.linalg.vector_norm(param, ord=2) ** 2
 
-                loss += self.criterion(y_pred, y) + self.config["GAMMA"] / 2 * l2_norm
+                loss += self.criterion(y_pred, y) + \
+                    self.config["GAMMA"] / 2 * l2_norm
             loss = loss / len(dataloader)
         return loss
 
@@ -340,19 +343,20 @@ class GIANT(Strategy):
 
     def fit_step(self, server: Server, clients: List[Client]) -> None:
         print("Starting GIANT fit step")
-        ## Single iteration of the GIANT algorithm
+        # Single iteration of the GIANT algorithm
 
         # FIRST COMMUNICATION ROUND
         for client in clients:
-            client.compute_local_gradient(max_iters=10)
+            client.compute_local_gradient(max_iters=None)
 
         gradient = server.aggregate_gradients(
-            torch.stack([client.local_gradient.squeeze() for client in clients], dim=0)
+            torch.stack([client.local_gradient.squeeze()
+                        for client in clients], dim=0)
         )
 
         # SECOND COMMUNICATION ROUND
         for client in clients:
-            client.compute_ant(gradient, max_iters=10)
+            client.compute_ant(gradient, max_iters=None)
 
         newton_direction = server.aggregate_ants(
             torch.stack([client.ant.squeeze() for client in clients], dim=0)
@@ -360,6 +364,7 @@ class GIANT(Strategy):
 
         # OPTIMIZATION STEP (i.e. final iteration of the Newton method)
         # NB: Requires two additional communication rounds
+        print(f"Start backtracking line search...")
         step_size = self.backtracking_ls(clients, gradient, newton_direction)
         print(f"Step size = {step_size}")
         server.current_params = server.current_params - step_size * newton_direction
@@ -376,7 +381,7 @@ class GIANT(Strategy):
         """
         Returns the optimal step size with Backtracking line search.
         """
-        candidates = [1.0, 0.1, 0.01, 0.001, 0.0001]
+        candidates = [1.0, 0.1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9]
 
         candidate_losses = []
         local_losses = []
@@ -388,7 +393,7 @@ class GIANT(Strategy):
 
         candidate_losses = torch.stack(
             candidate_losses, dim=0
-        )  # shape = (n_clients, n_candidates)
+        ).to(DEVICE)  # shape = (n_clients, n_candidates)
 
         local_losses = torch.tensor(local_losses)
 
