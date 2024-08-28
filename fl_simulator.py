@@ -44,7 +44,7 @@ class Client:
         ) = self.initialize_local_datasets(config, client_idx)
 
         # Initialize the model
-        self.net = LinearModel(input_dim)
+        self.net = LinearModel(input_dim).to(DEVICE)
 
         # Initialize Approximate newton direction member variable
         self.ant: torch.Tensor = None
@@ -103,7 +103,7 @@ class Client:
         Get the parameters of the network.
         """
         params = [val.cpu().numpy() for _, val in self.net.state_dict().items()][0]
-        return torch.tensor(params)
+        return torch.tensor(params).to(DEVICE)
 
     def compute_local_gradient(self, is_byzantine=False, max_iters=None) -> None:
         """
@@ -372,8 +372,8 @@ class Strategy:
             )
             local_losses.append(client.compute_local_loss(SPLIT.TRAIN))
 
-        candidate_losses = torch.stack(
-            candidate_losses, dim=0
+        candidate_losses = torch.stack(candidate_losses, dim=0).to(
+            DEVICE
         )  # shape = (n_clients, n_candidates)
 
         local_losses = torch.tensor(local_losses)
