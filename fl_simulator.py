@@ -153,28 +153,29 @@ class Client:
     def compute_ant(self, aggregated_gradient: torch.Tensor, max_iters=None) -> None:
 
         # Compute the Hessian of the loss function
-        self.net.train()
-        self.net.zero_grad()
+        self.net.eval()
 
-        ajs = []
+        with torch.no_grad:
 
-        for i, (X, y) in enumerate(self.train_dataloader):
-            if max_iters is not None and (i + 1) > max_iters:
-                print("Max iters reached")
-                break
-            if i % 10 == 0:
-                print(f"(ANT-Pass) Client {self.client_idx}, Batch {i}")
-            X = X.float().to(DEVICE)
-            y = y.float().to(DEVICE)
+            ajs = []
 
-            y_pred = self.net(X)
+            for i, (X, y) in enumerate(self.train_dataloader):
+                if max_iters is not None and (i + 1) > max_iters:
+                    print("Max iters reached")
+                    break
+                if i % 10 == 0:
+                    print(f"(ANT-Pass) Client {self.client_idx}, Batch {i}")
+                X = X.float().to(DEVICE)
+                y = y.float().to(DEVICE)
 
-            dxx_l = BCELossWithLogits_simple_dxx(y_pred)
+                y_pred = self.net(X)
 
-            ajs_batch = torch.sqrt(dxx_l) * X
+                dxx_l = BCELossWithLogits_simple_dxx(y_pred)
 
-            ajs.append(ajs_batch)
-            i += 1
+                ajs_batch = torch.sqrt(dxx_l) * X
+
+                ajs.append(ajs_batch)
+                i += 1
 
         A_j = torch.cat(ajs, dim=0).to(DEVICE)
         s = len(self.train_dataloader) * self.config["BATCH_SIZE"]
@@ -195,40 +196,50 @@ class Client:
         self.ant = torch.tensor(ant).squeeze().to(DEVICE)
 
     def get_bls_losses(
-        self, candidates: List[float], descent_direction: torch.Tensor, c=0.1
+        self,
+        candidates: List[float],
+        descent_direction: torch.Tensor,
+        c=0.1,
+        max_iters=None,
     ) -> torch.Tensor:
         """
         Compute losses for different step sizes.
         """
         bls_losses = []
 
-        for candidate in candidates:
-            # print(f"Candidate {candidate}")
-            l = 0
-            for X, y in self.train_dataloader:
-                X = X.float().to(DEVICE)
-                y = y.float().to(DEVICE)
+        self.net.eval()
+        with torch.no_grad():
 
-                # Get the current parameters as tensor
-                parameters = torch.cat(
-                    [param.flatten() for param in self.net.parameters()]
-                )
+            for candidate in candidates:
+                print(f"Candidate {candidate}")
+                l = 0
+                for i, (X, y) in enumerate(self.train_dataloader):
+                    if max_iters is not None and i >= max_iters:
+                        break
 
-                new_candidate_params = parameters + candidate * descent_direction
+                    X = X.float().to(DEVICE)
+                    y = y.float().to(DEVICE)
 
-                y_hat_new = torch.matmul(
-                    X, torch.transpose(new_candidate_params.unsqueeze(0), 0, 1)
-                ).squeeze()
+                    # Get the current parameters as tensor
+                    parameters = torch.cat(
+                        [param.flatten() for param in self.net.parameters()]
+                    )
 
-                l += (
-                    self.criterion(y_hat_new, y)
-                    + self.config["GAMMA"]
-                    * 0.5
-                    * torch.linalg.vector_norm(new_candidate_params, ord=2) ** 2
-                )
+                    new_candidate_params = parameters + candidate * descent_direction
 
-            l = l / len(self.train_dataloader)
-            bls_losses.append(l)
+                    y_hat_new = torch.matmul(
+                        X, torch.transpose(new_candidate_params.unsqueeze(0), 0, 1)
+                    ).squeeze()
+
+                    l += (
+                        self.criterion(y_hat_new, y)
+                        + self.config["GAMMA"]
+                        * 0.5
+                        * torch.linalg.vector_norm(new_candidate_params, ord=2) ** 2
+                    )
+
+                l = l / len(self.train_dataloader)
+                bls_losses.append(l)
         return torch.tensor(bls_losses)
 
     def compute_local_loss(self, split: SPLIT) -> float:
@@ -243,6 +254,12 @@ class Client:
         elif split == SPLIT.TEST:
             dataloader = self.test_dataloader
 
+        self.net.eval()
+
+        l2_norm = 0
+        for param in self.net.parameters():
+            l2_norm += torch.linalg.vector_norm(param, ord=2) ** 2
+
         with torch.no_grad():
             loss = 0
 
@@ -252,11 +269,8 @@ class Client:
 
                 y_pred = self.net(X).squeeze()
 
-                l2_norm = 0
-                for param in self.net.parameters():
-                    l2_norm += torch.linalg.vector_norm(param, ord=2) ** 2
-
                 loss += self.criterion(y_pred, y) + self.config["GAMMA"] / 2 * l2_norm
+
             loss = loss / len(dataloader)
         return loss
 
@@ -271,6 +285,8 @@ class Client:
             dataloader = self.valid_dataloader
         elif split == SPLIT.TEST:
             dataloader = self.test_dataloader
+
+        self.net.eval()
 
         with torch.no_grad():
             correct = 0
@@ -308,6 +324,7 @@ class Server:
         """
         Sync the global model parameters with the clients.
         """
+        print("Sending parameters to clients")
         if self.current_params is None:
             self.current_params = clients[0].get_parameters()
         for client in clients:
@@ -333,56 +350,25 @@ class Strategy:
         # To be implemented in the subclasses
         raise NotImplementedError
 
-
-class GIANT(Strategy):
-    def __init__(self) -> None:
-        super().__init__()
-
-    def fit_step(self, server: Server, clients: List[Client]) -> None:
-        print("Starting GIANT fit step")
-        ## Single iteration of the GIANT algorithm
-
-        # FIRST COMMUNICATION ROUND
-        for client in clients:
-            client.compute_local_gradient(max_iters=10)
-
-        gradient = server.aggregate_gradients(
-            torch.stack([client.local_gradient.squeeze() for client in clients], dim=0)
-        )
-
-        # SECOND COMMUNICATION ROUND
-        for client in clients:
-            client.compute_ant(gradient, max_iters=10)
-
-        newton_direction = server.aggregate_ants(
-            torch.stack([client.ant.squeeze() for client in clients], dim=0)
-        )
-
-        # OPTIMIZATION STEP (i.e. final iteration of the Newton method)
-        # NB: Requires two additional communication rounds
-        step_size = self.backtracking_ls(clients, gradient, newton_direction)
-        print(f"Step size = {step_size}")
-        server.current_params = server.current_params - step_size * newton_direction
-
-        # Communicate the new parameters to the clients
-        server.send_params_to_clients(clients)
-
     def backtracking_ls(
         self,
         clients: List[Client],
         gradient: torch.Tensor,
         descent_direction: torch.Tensor,
+        max_iters: int = None,
     ) -> float:
         """
         Returns the optimal step size with Backtracking line search.
         """
-        candidates = [1.0, 0.1, 0.01, 0.001, 0.0001]
+        candidates = [100, 10, 1.0, 0.1, 0.01, 0.001, 0.0001]
 
         candidate_losses = []
         local_losses = []
         for client in clients:
             candidate_losses.append(
-                client.get_bls_losses(candidates, descent_direction, c=0.1)
+                client.get_bls_losses(
+                    candidates, descent_direction, c=0.1, max_iters=max_iters
+                )
             )
             local_losses.append(client.compute_local_loss(SPLIT.TRAIN))
 
@@ -405,10 +391,69 @@ class GIANT(Strategy):
         return candidates[i]
 
 
-class FedAvg(Strategy):
-    def __init__(self) -> None:
+class GIANT(Strategy):
+    def __init__(self, max_iters=None) -> None:
         super().__init__()
+        self.max_iters = max_iters
+
+    def fit_step(self, server: Server, clients: List[Client]) -> None:
+        print("Starting GIANT fit step")
+        ## Single iteration of the GIANT algorithm
+
+        # FIRST COMMUNICATION ROUND
+        for client in clients:
+            client.compute_local_gradient(max_iters=self.max_iters)
+
+        gradient = server.aggregate_gradients(
+            torch.stack([client.local_gradient.squeeze() for client in clients], dim=0)
+        )
+
+        # SECOND COMMUNICATION ROUND
+        for client in clients:
+            client.compute_ant(gradient, max_iters=self.max_iters)
+
+        newton_direction = server.aggregate_ants(
+            torch.stack([client.ant.squeeze() for client in clients], dim=0)
+        )
+
+        # OPTIMIZATION STEP (i.e. final iteration of the Newton method)
+        # NB: Requires two additional communication rounds
+        step_size = self.backtracking_ls(
+            clients, gradient, -newton_direction, max_iters=self.max_iters
+        )
+        print(f"Step size = {step_size}")
+        server.current_params = server.current_params - step_size * newton_direction
+
+        # Communicate the new parameters to the clients
+        server.send_params_to_clients(clients)
+
+
+class FedAvg(Strategy):
+    def __init__(self, max_iters=None) -> None:
+        super().__init__()
+        self.max_iters = max_iters
         pass
+
+    def fit_step(self, server: Server, clients: List[Client]) -> None:
+        print("Starting FedAvg fit step")
+
+        for client in clients:
+            client.compute_local_gradient(max_iters=self.max_iters)
+
+        gradient = server.aggregate_gradients(
+            torch.stack([client.local_gradient.squeeze() for client in clients], dim=0)
+        )
+
+        # OPTIMIZATION STEP (i.e. final iteration of the Newton method)
+        # NB: Requires two additional communication rounds
+        step_size = self.backtracking_ls(
+            clients, gradient, -gradient, max_iters=self.max_iters
+        )
+        print(f"Step size = {step_size}")
+        server.current_params = server.current_params - step_size * gradient
+
+        # Communicate the new parameters to the clients
+        server.send_params_to_clients(clients)
 
 
 class Simulation:
@@ -419,15 +464,55 @@ class Simulation:
         self.strategy = strategy
 
         self.clients = [Client(config, i) for i in range(n_clients)]
+
+        # Plot parameters before and after syncing
+        for j, c in enumerate(self.clients):
+            params_numpy = [
+                param.detach().cpu().numpy().squeeze() for param in c.net.parameters()
+            ][0]
+            plt.hist(params_numpy, bins=100)
+            plt.title(f"0_Client {j} before syncing")
+            plt.savefig(os.path.join("figures", f"0_Client {j} before syncing.png"))
+            plt.close()
+
         self.server = Server(config, start_parameters)
 
         # Equalize the parameters of all the clients
         self.server.send_params_to_clients(self.clients)
 
+        for j, c in enumerate(self.clients):
+            params_numpy = [
+                param.detach().cpu().numpy().squeeze() for param in c.net.parameters()
+            ][0]
+            plt.hist(params_numpy, bins=100)
+            plt.title(f"1_Client {j} after syncing")
+            plt.savefig(os.path.join("figures", f"1_Client {j} after syncing.png"))
+            plt.close()
+
     def start_simulation(self, n_rounds: int) -> None:
+        train_loss, train_accuracy, valid_loss, valid_accuracy = (
+            self.federated_evaluation()
+        )
+
+        print(
+            f"Train Loss: {train_loss}, Train Accuracy: {train_accuracy}, Valid Loss: {valid_loss}, Valid Accuracy: {valid_accuracy}"
+        )
         for round in range(n_rounds):
             print(f"Starting Round {round}")
             self.strategy.fit_step(self.server, self.clients)
+
+            # plot client parameters after syncing
+            for j, c in enumerate(self.clients):
+                params_numpy = [
+                    param.detach().cpu().numpy().squeeze()
+                    for param in c.net.parameters()
+                ][0]
+                plt.hist(params_numpy, bins=100)
+                plt.title(f"2_Client {j} after syncing_{round}")
+                plt.savefig(
+                    os.path.join("figures", f"2_Client {j} after syncing_{round}.png")
+                )
+                plt.close()
 
             train_loss, train_accuracy, valid_loss, valid_accuracy = (
                 self.federated_evaluation()
@@ -478,8 +563,9 @@ class Simulation:
 
 if __name__ == "__main__":
 
-    strategy = GIANT()
+    # strategy = GIANT(CONFIg["MAX_CLIENT_ITERS"])
+    strategy = FedAvg(CONFIG["MAX_CLIENT_ITERS"])
 
-    sim = Simulation(config=CONFIG, strategy=strategy, n_clients=3)
+    sim = Simulation(config=CONFIG, strategy=strategy, n_clients=CONFIG["N_CLIENTS"])
 
-    sim.start_simulation(n_rounds=10)
+    sim.start_simulation(n_rounds=CONFIG["NUM_ROUNDS"])
