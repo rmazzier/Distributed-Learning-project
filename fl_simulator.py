@@ -4,6 +4,7 @@ Classes and functions for a custom made federated learning simulator.
 
 import torch
 import wandb
+import json
 
 # from torch.autograd.functional import hessian
 import numpy as np
@@ -599,6 +600,8 @@ class Simulation:
             f"Train Loss: {train_loss}, Train Accuracy: {train_accuracy}, Valid Loss: {valid_loss}, Valid Accuracy: {valid_accuracy}"
         )
 
+        valid_losses = []
+
         for round in range(1, n_rounds + 1):
 
             # Select a random subset of corrupt byzantine clients
@@ -653,6 +656,22 @@ class Simulation:
                 },
                 step=logged_round,
             )
+
+            # Check if this is the best validation loss, if so save the model
+            valid_losses.append(valid_loss)
+            if valid_loss == min(valid_losses):
+                print("Saving best model")
+                torch.save(
+                    self.clients[0].net.state_dict(),
+                    os.path.join(
+                        "results",
+                        f"best_model_weights.pt",
+                    ),
+                )
+
+                # Also save the current config as a json file
+                with open(os.path.join("results", "config.json"), "w") as config_file:
+                    json.dump(self.config, config_file)
 
         # Final Test step here (i.e. take mean of accuracies and losses)
         print("Final Test step")
