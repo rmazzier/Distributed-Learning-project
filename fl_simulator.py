@@ -3,6 +3,7 @@ Classes and functions for a custom made federated learning simulator.
 """
 
 import torch
+import wandb
 
 # from torch.autograd.functional import hessian
 import numpy as np
@@ -102,7 +103,8 @@ class Client:
         """
         Get the parameters of the network.
         """
-        params = [val.cpu().numpy() for _, val in self.net.state_dict().items()][0]
+        params = [val.cpu().numpy()
+                  for _, val in self.net.state_dict().items()][0]
         return torch.tensor(params).to(DEVICE)
 
     def compute_local_gradient(self, is_byzantine=False, max_iters=None) -> None:
@@ -136,7 +138,8 @@ class Client:
             for param in self.net.parameters():
                 l2_norm += torch.linalg.vector_norm(param, ord=2) ** 2
 
-            loss = self.criterion(y_pred, y) + self.config["GAMMA"] / 2 * l2_norm
+            loss = self.criterion(y_pred, y) + \
+                self.config["GAMMA"] / 2 * l2_norm
 
             loss.backward()
         # Set the local gradient member variable to the accumulated gradient
@@ -155,7 +158,7 @@ class Client:
         # Compute the Hessian of the loss function
         self.net.eval()
 
-        with torch.no_grad:
+        with torch.no_grad():
 
             ajs = []
 
@@ -228,7 +231,8 @@ class Client:
                     new_candidate_params = parameters + candidate * descent_direction
 
                     y_hat_new = torch.matmul(
-                        X, torch.transpose(new_candidate_params.unsqueeze(0), 0, 1)
+                        X, torch.transpose(
+                            new_candidate_params.unsqueeze(0), 0, 1)
                     ).squeeze()
 
                     l += (
@@ -269,7 +273,8 @@ class Client:
 
                 y_pred = self.net(X).squeeze()
 
-                loss += self.criterion(y_pred, y) + self.config["GAMMA"] / 2 * l2_norm
+                loss += self.criterion(y_pred, y) + \
+                    self.config["GAMMA"] / 2 * l2_norm
 
             loss = loss / len(dataloader)
         return loss
@@ -298,7 +303,7 @@ class Client:
 
                 y_pred = self.net(X).squeeze()
 
-                correct += (y_pred > 0.5).eq(y > 0.5).sum().item()
+                correct += (y_pred > 0).eq(y > 0.5).sum().item()
                 total += y.shape[0]
 
             accuracy = correct / total
@@ -398,14 +403,15 @@ class GIANT(Strategy):
 
     def fit_step(self, server: Server, clients: List[Client]) -> None:
         print("Starting GIANT fit step")
-        ## Single iteration of the GIANT algorithm
+        # Single iteration of the GIANT algorithm
 
         # FIRST COMMUNICATION ROUND
         for client in clients:
             client.compute_local_gradient(max_iters=self.max_iters)
 
         gradient = server.aggregate_gradients(
-            torch.stack([client.local_gradient.squeeze() for client in clients], dim=0)
+            torch.stack([client.local_gradient.squeeze()
+                        for client in clients], dim=0)
         )
 
         # SECOND COMMUNICATION ROUND
@@ -441,7 +447,8 @@ class FedAvg(Strategy):
             client.compute_local_gradient(max_iters=self.max_iters)
 
         gradient = server.aggregate_gradients(
-            torch.stack([client.local_gradient.squeeze() for client in clients], dim=0)
+            torch.stack([client.local_gradient.squeeze()
+                        for client in clients], dim=0)
         )
 
         # OPTIMIZATION STEP (i.e. final iteration of the Newton method)
@@ -472,7 +479,8 @@ class Simulation:
             ][0]
             plt.hist(params_numpy, bins=100)
             plt.title(f"0_Client {j} before syncing")
-            plt.savefig(os.path.join("figures", f"0_Client {j} before syncing.png"))
+            plt.savefig(os.path.join(
+                "figures", f"0_Client {j} before syncing.png"))
             plt.close()
 
         self.server = Server(config, start_parameters)
@@ -486,18 +494,42 @@ class Simulation:
             ][0]
             plt.hist(params_numpy, bins=100)
             plt.title(f"1_Client {j} after syncing")
-            plt.savefig(os.path.join("figures", f"1_Client {j} after syncing.png"))
+            plt.savefig(os.path.join(
+                "figures", f"1_Client {j} after syncing.png"))
             plt.close()
 
     def start_simulation(self, n_rounds: int) -> None:
+
+        # Start wandb session
+        wandb.login()
+        run = wandb.init(
+            project="DistributedOptimizationProject",
+            config=self.config,
+            name=self.config["MODEL_NAME"],
+            notes=self.config["NOTES"],
+            reinit=True,
+            mode=self.config["WANDB_MODE"],
+            group=self.config["WANDB_GROUP"],
+            tags=self.config["WANDB_TAGS"]
+        )
+
         train_loss, train_accuracy, valid_loss, valid_accuracy = (
             self.federated_evaluation()
+        )
+
+        wandb.log(
+            {
+                "Train Loss": train_loss,
+                "Train Accuracy": train_accuracy,
+                "Valid Loss": valid_loss,
+                "Valid Accuracy": valid_accuracy,
+            }, step=0
         )
 
         print(
             f"Train Loss: {train_loss}, Train Accuracy: {train_accuracy}, Valid Loss: {valid_loss}, Valid Accuracy: {valid_accuracy}"
         )
-        for round in range(n_rounds):
+        for round in range(1, n_rounds+1):
             print(f"Starting Round {round}")
             self.strategy.fit_step(self.server, self.clients)
 
@@ -510,7 +542,8 @@ class Simulation:
                 plt.hist(params_numpy, bins=100)
                 plt.title(f"2_Client {j} after syncing_{round}")
                 plt.savefig(
-                    os.path.join("figures", f"2_Client {j} after syncing_{round}.png")
+                    os.path.join(
+                        "figures", f"2_Client {j} after syncing_{round}.png")
                 )
                 plt.close()
 
@@ -520,6 +553,23 @@ class Simulation:
 
             print(
                 f"Train Loss: {train_loss}, Train Accuracy: {train_accuracy}, Valid Loss: {valid_loss}, Valid Accuracy: {valid_accuracy}"
+            )
+
+            # The round to be logged to depends on the strategy, since GIANT makes 2 steps,
+            # while FedAvg makes only 1 step.
+            # We ccheck if strategy is of type GIANT, if so we log the round number times 2
+            if isinstance(self.strategy, GIANT):
+                logged_round = round * 2
+            else:
+                logged_round = round
+
+            wandb.log(
+                {
+                    "Train Loss": train_loss,
+                    "Train Accuracy": train_accuracy,
+                    "Valid Loss": valid_loss,
+                    "Valid Accuracy": valid_accuracy,
+                }, step=logged_round
             )
 
         # Final Test step here (i.e. take mean of accuracies and losses)
@@ -535,6 +585,7 @@ class Simulation:
         test_accuracy = test_accuracy / len(self.clients)
 
         print(f"Test Loss: {test_loss}, Test Accuracy: {test_accuracy}")
+        run.finish()
 
     def federated_evaluation(self):
         # Get training set loss and accuracy
@@ -563,9 +614,10 @@ class Simulation:
 
 if __name__ == "__main__":
 
-    # strategy = GIANT(CONFIg["MAX_CLIENT_ITERS"])
+    # strategy = GIANT(CONFIG["MAX_CLIENT_ITERS"])
     strategy = FedAvg(CONFIG["MAX_CLIENT_ITERS"])
 
-    sim = Simulation(config=CONFIG, strategy=strategy, n_clients=CONFIG["N_CLIENTS"])
+    sim = Simulation(config=CONFIG, strategy=strategy,
+                     n_clients=CONFIG["N_CLIENTS"])
 
     sim.start_simulation(n_rounds=CONFIG["NUM_ROUNDS"])

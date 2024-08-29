@@ -14,20 +14,20 @@ CONFIG = {
     "GEN_DATA_DIR": os.path.join("data", "samples"),
     "RESULTS_DIR": os.path.join("results"),
     # Dataset parameters
-    "N_CLIENTS": 10,
+    "N_CLIENTS": 3,
     "MAX_CLIENT_ITERS": 50,
     # (Train, Validation), test is already separated
     "SPLIT_SIZES": [0.8, 0.2],
     "EPOCHS": 20,
-    "NUM_ROUNDS": 10,
+    "NUM_ROUNDS": 20,
     "BATCH_SIZE": 128,
-    "GAMMA": 0.0001,
+    "GAMMA": 1e-8,
     "USE_RANDOM_FOURIER": False,
     "N_FOURIER_FEATURES": 10000,
     # --- WANDB VARIABLES ---
-    "MODEL_NAME": "FirstTest8",
-    "WANDB_MODE": "disabled",
-    "WANDB_GROUP": "",
+    "MODEL_NAME": "FedAvgFirstTest",
+    "WANDB_MODE": "online",
+    "WANDB_GROUP": "tests",
     "WANDB_TAGS": [],
-    "NOTES": "",
+    "NOTES": "First test",
 }
