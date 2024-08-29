@@ -27,7 +27,7 @@ CONFIG = {
     "N_FOURIER_FEATURES": 10000,
     # --- WANDB VARIABLES ---
     "MODEL_NAME": "ByzantineTest",
-    "WANDB_MODE": "online",
+    "WANDB_MODE": "disabled",
     "WANDB_GROUP": "tests",
     "WANDB_TAGS": [],
     "NOTES": "First test",

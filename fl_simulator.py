@@ -103,7 +103,8 @@ class Client:
         """
         Get the parameters of the network.
         """
-        params = [val.cpu().numpy() for _, val in self.net.state_dict().items()][0]
+        params = [val.cpu().numpy()
+                  for _, val in self.net.state_dict().items()][0]
         return torch.tensor(params).to(DEVICE)
 
     def compute_local_gradient(self, is_byzantine=False, max_iters=None) -> None:
@@ -137,11 +138,13 @@ class Client:
             for param in self.net.parameters():
                 l2_norm += torch.linalg.vector_norm(param, ord=2) ** 2
 
-            loss = self.criterion(y_pred, y) + self.config["GAMMA"] / 2 * l2_norm
+            loss = self.criterion(y_pred, y) + \
+                self.config["GAMMA"] / 2 * l2_norm
 
             loss.backward()
         # Set the local gradient member variable to the accumulated gradient
         if is_byzantine:
+            print("eheh")
             # return random stuff (check again)
             fake_grad = [
                 torch.randn(param.shape).to(DEVICE) for param in self.net.parameters()
@@ -238,7 +241,8 @@ class Client:
                     new_candidate_params = parameters + candidate * descent_direction
 
                     y_hat_new = torch.matmul(
-                        X, torch.transpose(new_candidate_params.unsqueeze(0), 0, 1)
+                        X, torch.transpose(
+                            new_candidate_params.unsqueeze(0), 0, 1)
                     ).squeeze()
 
                     l += (
@@ -279,7 +283,8 @@ class Client:
 
                 y_pred = self.net(X).squeeze()
 
-                loss += self.criterion(y_pred, y) + self.config["GAMMA"] / 2 * l2_norm
+                loss += self.criterion(y_pred, y) + \
+                    self.config["GAMMA"] / 2 * l2_norm
 
             loss = loss / len(dataloader)
         return loss
@@ -345,7 +350,7 @@ class Server:
             return torch.mean(local_gradients, axis=0)
         elif self.reduce_op == "median":
             # Here we use MNM
-            return torch.median(local_gradients, axis=0)
+            return geometric_median(local_gradients.cpu().numpy())
         else:
             raise ValueError("Invalid reduce operation.")
 
@@ -357,7 +362,7 @@ class Server:
         if self.reduce_op == "mean":
             return torch.mean(local_ants, axis=0)
         elif self.reduce_op == "median":
-            return torch.median(local_ants, axis=0)
+            return geometric_median(local_ants.cpu().numpy())
         else:
             raise ValueError("Invalid reduce operation.")
 
@@ -456,7 +461,8 @@ class GIANT(Strategy):
             )
 
         gradient = server.aggregate_gradients(
-            torch.stack([client.local_gradient.squeeze() for client in clients], dim=0)
+            torch.stack([client.local_gradient.squeeze()
+                        for client in clients], dim=0)
         )
 
         # SECOND COMMUNICATION ROUNDs
@@ -495,11 +501,16 @@ class FedAvg(Strategy):
     ) -> None:
         print("Starting FedAvg fit step")
 
-        for client in clients:
-            client.compute_local_gradient(max_iters=self.max_iters)
+        for client_idx, client in enumerate(clients):
+            is_byzantine = client_idx in byzantine_idxs
+            if is_byzantine:
+                print(f"Client {client_idx} sending fake gradient")
+            client.compute_local_gradient(
+                max_iters=self.max_iters, is_byzantine=is_byzantine)
 
         gradient = server.aggregate_gradients(
-            torch.stack([client.local_gradient.squeeze() for client in clients], dim=0)
+            torch.stack([client.local_gradient.squeeze()
+                        for client in clients], dim=0)
         )
 
         # OPTIMIZATION STEP (i.e. final iteration of the Newton method)
@@ -521,7 +532,6 @@ class Simulation:
         strategy: Strategy,
         server: Server,
         n_clients: int,
-        start_parameters=None,
         seed=0,
     ) -> None:
         self.config = config
@@ -537,7 +547,8 @@ class Simulation:
             ][0]
             plt.hist(params_numpy, bins=100)
             plt.title(f"0_Client {j} before syncing")
-            plt.savefig(os.path.join("figures", f"0_Client {j} before syncing.png"))
+            plt.savefig(os.path.join(
+                "figures", f"0_Client {j} before syncing.png"))
             plt.close()
 
         self.server = server
@@ -551,7 +562,8 @@ class Simulation:
             ][0]
             plt.hist(params_numpy, bins=100)
             plt.title(f"1_Client {j} after syncing")
-            plt.savefig(os.path.join("figures", f"1_Client {j} after syncing.png"))
+            plt.savefig(os.path.join(
+                "figures", f"1_Client {j} after syncing.png"))
             plt.close()
 
     def start_simulation(self, n_rounds: int) -> None:
@@ -611,7 +623,8 @@ class Simulation:
                 plt.hist(params_numpy, bins=100)
                 plt.title(f"2_Client {j} after syncing_{round}")
                 plt.savefig(
-                    os.path.join("figures", f"2_Client {j} after syncing_{round}.png")
+                    os.path.join(
+                        "figures", f"2_Client {j} after syncing_{round}.png")
                 )
                 plt.close()
 
@@ -686,7 +699,7 @@ if __name__ == "__main__":
     # strategy = GIANT(CONFIG["MAX_CLIENT_ITERS"])
     strategy = FedAvg(CONFIG["MAX_CLIENT_ITERS"])
 
-    server = Server(CONFIG, reduce_op="mean")
+    server = Server(CONFIG, reduce_op="median")
 
     sim = Simulation(
         config=CONFIG, strategy=strategy, server=server, n_clients=CONFIG["N_CLIENTS"]

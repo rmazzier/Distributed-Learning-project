@@ -4,6 +4,7 @@ import enum
 import torch
 import numpy as np
 from scipy.spatial.distance import cdist, euclidean
+from constants import DEVICE
 
 
 class SPLIT(enum.Enum):
@@ -16,7 +17,8 @@ def backtracking_line_search(X, y, criterion, parameters, gradient, direction, c
     candidates = [10000, 1000, 100, 10, 1.0, 0.1, 0.01]
     for candidate in candidates:
         # Armijo - Goldstein condition
-        y_hat_old = torch.matmul(X, torch.transpose(parameters, 0, 1)).squeeze()
+        y_hat_old = torch.matmul(
+            X, torch.transpose(parameters, 0, 1)).squeeze()
         y_hat_new = torch.matmul(
             X, torch.transpose(parameters + candidate * direction, 0, 1)
         ).squeeze()
@@ -53,31 +55,6 @@ def geometric_median(X, eps=1e-5):
             y1 = max(0, 1 - rinv) * T + min(1, rinv) * y
 
         if euclidean(y, y1) < eps:
-            return y1
+            return torch.tensor(y1).float().to(DEVICE)
 
         y = y1
-
-
-if __name__ == "__main__":
-    import matplotlib.pyplot as plt
-
-    # Test the geometric_median function
-    # Sample 100 random 2-dimensional points
-    X = np.random.rand(100, 2)
-    # Insert some outliers
-    X[0] = [2.5, 3.1]
-    X[1] = [3, 3]
-    X[2] = [2.8, 3.2]
-    X[3] = [2.9, 3.3]
-    X[4] = [3.1, 3.1]
-    X[5] = [2.9, 3.2]
-
-    print(geometric_median(X))
-
-    # plot the points and the geometric median with different colors
-    plt.scatter(X[:, 0], X[:, 1], c="blue")
-    plt.scatter(geometric_median(X)[0], geometric_median(X)[1], c="red")
-
-    # Plot the mean for comparison
-    plt.scatter(np.mean(X, 0)[0], np.mean(X, 0)[1], c="green")
-    plt.show()
