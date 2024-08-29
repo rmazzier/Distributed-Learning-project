@@ -18,7 +18,7 @@ from typing import List, Tuple, Dict
 from collections import OrderedDict
 
 from constants import CONFIG, DEVICE
-from utils import SPLIT
+from utils import SPLIT, geometric_median
 from dataset import EpsilonDataset
 from model import LinearModel
 from train import (
@@ -103,8 +103,7 @@ class Client:
         """
         Get the parameters of the network.
         """
-        params = [val.cpu().numpy()
-                  for _, val in self.net.state_dict().items()][0]
+        params = [val.cpu().numpy() for _, val in self.net.state_dict().items()][0]
         return torch.tensor(params).to(DEVICE)
 
     def compute_local_gradient(self, is_byzantine=False, max_iters=None) -> None:
@@ -138,22 +137,23 @@ class Client:
             for param in self.net.parameters():
                 l2_norm += torch.linalg.vector_norm(param, ord=2) ** 2
 
-            loss = self.criterion(y_pred, y) + \
-                self.config["GAMMA"] / 2 * l2_norm
+            loss = self.criterion(y_pred, y) + self.config["GAMMA"] / 2 * l2_norm
 
             loss.backward()
         # Set the local gradient member variable to the accumulated gradient
         if is_byzantine:
             # return random stuff (check again)
-            lg = [
+            fake_grad = [
                 torch.randn(param.shape).to(DEVICE) for param in self.net.parameters()
             ]
-            self.local_gradient = torch.cat(lg, dim=0).to(DEVICE)
+            self.local_gradient = torch.cat(fake_grad, dim=0).to(DEVICE)
         else:
             lg = [param.grad.cpu() for param in self.net.parameters()]
             self.local_gradient = torch.cat(lg, dim=0).to(DEVICE)
 
-    def compute_ant(self, aggregated_gradient: torch.Tensor, max_iters=None) -> None:
+    def compute_ant(
+        self, aggregated_gradient: torch.Tensor, is_byzantine=False, max_iters=None
+    ) -> None:
 
         # Compute the Hessian of the loss function
         self.net.eval()
@@ -196,7 +196,14 @@ class Client:
         )
 
         # Set the ant member variable to the computed ant
-        self.ant = torch.tensor(ant).squeeze().to(DEVICE)
+        if is_byzantine:
+            # return random stuff (check again)
+            fake_ant = [
+                torch.randn(param.shape).to(DEVICE) for param in self.net.parameters()
+            ]
+            self.ant = torch.cat(fake_ant, dim=0).squeeze().to(DEVICE)
+        else:
+            self.ant = torch.tensor(ant).squeeze().to(DEVICE)
 
     def get_bls_losses(
         self,
@@ -231,8 +238,7 @@ class Client:
                     new_candidate_params = parameters + candidate * descent_direction
 
                     y_hat_new = torch.matmul(
-                        X, torch.transpose(
-                            new_candidate_params.unsqueeze(0), 0, 1)
+                        X, torch.transpose(new_candidate_params.unsqueeze(0), 0, 1)
                     ).squeeze()
 
                     l += (
@@ -273,8 +279,7 @@ class Client:
 
                 y_pred = self.net(X).squeeze()
 
-                loss += self.criterion(y_pred, y) + \
-                    self.config["GAMMA"] / 2 * l2_norm
+                loss += self.criterion(y_pred, y) + self.config["GAMMA"] / 2 * l2_norm
 
             loss = loss / len(dataloader)
         return loss
@@ -311,19 +316,50 @@ class Client:
 
 
 class Server:
-    def __init__(self, config, start_parameters=None) -> None:
+    def __init__(
+        self, config: Dict, reduce_op: str = "mean", start_parameters=None
+    ) -> None:
+        """
+        Server class for the federated learning simulator.
+
+        Parameters:
+        - config: Configuration dictionary
+        - reduce_op: Aggregation function to be used for the gradients. Can be
+            either "mean" or "median".
+        - start_parameters: Starting parameters for the global model. If None, the
+            parameters are taken from the first client and set to all the clients.
+        """
         self.config = config
         self.current_params = start_parameters
 
+        if reduce_op in ["mean", "median"]:
+            self.reduce_op = reduce_op
+        else:
+            raise ValueError(
+                "Invalid reduce operation. Must be either 'mean' or 'median'."
+            )
+
     def aggregate_gradients(self, local_gradients: torch.Tensor) -> torch.Tensor:
-        return torch.mean(local_gradients, axis=0)
+        if self.reduce_op == "mean":
+            # Here we use GIANT's aggregation function
+            return torch.mean(local_gradients, axis=0)
+        elif self.reduce_op == "median":
+            # Here we use MNM
+            return torch.median(local_gradients, axis=0)
+        else:
+            raise ValueError("Invalid reduce operation.")
 
     def aggregate_ants(self, local_ants: torch.Tensor) -> torch.Tensor:
         """
         Aggregate the approximate newton directions from the clients.
         i.e. Compute the GIANT (Globally Improved Approximate Newton Direction)
         """
-        return torch.mean(local_ants, axis=0)
+        if self.reduce_op == "mean":
+            return torch.mean(local_ants, axis=0)
+        elif self.reduce_op == "median":
+            return torch.median(local_ants, axis=0)
+        else:
+            raise ValueError("Invalid reduce operation.")
 
     def send_params_to_clients(self, clients: List[Client]) -> None:
         """
@@ -341,7 +377,9 @@ class Strategy:
     def __init__(self) -> None:
         pass
 
-    def fit_step(self, server: Server, clients: List[Client]) -> None:
+    def fit_step(
+        self, server: Server, clients: List[Client], byzantine_idxs: List[int]
+    ) -> None:
         """
         A single fit step, where parameters of the global model are updated.
         """
@@ -387,6 +425,7 @@ class Strategy:
         mean_bls_losses = torch.mean(candidate_losses, axis=0)
 
         # Armijo-Goldstein condition
+        # TODO: Check with Eleonora if this is correct
         for i, candidate_loss in enumerate(mean_bls_losses):
             if candidate_loss <= local_losses.mean() + candidates[i] * 0.1 * torch.dot(
                 descent_direction.squeeze(), gradient.squeeze()
@@ -401,22 +440,33 @@ class GIANT(Strategy):
         super().__init__()
         self.max_iters = max_iters
 
-    def fit_step(self, server: Server, clients: List[Client]) -> None:
+    def fit_step(
+        self, server: Server, clients: List[Client], byzantine_idxs: List[int]
+    ) -> None:
         print("Starting GIANT fit step")
         # Single iteration of the GIANT algorithm
 
         # FIRST COMMUNICATION ROUND
-        for client in clients:
-            client.compute_local_gradient(max_iters=self.max_iters)
+        for client_idx, client in enumerate(clients):
+            is_byzantine = client_idx in byzantine_idxs
+            if is_byzantine:
+                print(f"Client {client_idx} sending fake gradient")
+            client.compute_local_gradient(
+                max_iters=self.max_iters, is_byzantine=is_byzantine
+            )
 
         gradient = server.aggregate_gradients(
-            torch.stack([client.local_gradient.squeeze()
-                        for client in clients], dim=0)
+            torch.stack([client.local_gradient.squeeze() for client in clients], dim=0)
         )
 
-        # SECOND COMMUNICATION ROUND
-        for client in clients:
-            client.compute_ant(gradient, max_iters=self.max_iters)
+        # SECOND COMMUNICATION ROUNDs
+        for client_idx, client in enumerate(clients):
+            is_byzantine = client_idx in byzantine_idxs
+            if is_byzantine:
+                print(f"Client {client_idx} sending fake ANT")
+            client.compute_ant(
+                gradient, max_iters=self.max_iters, is_byzantine=is_byzantine
+            )
 
         newton_direction = server.aggregate_ants(
             torch.stack([client.ant.squeeze() for client in clients], dim=0)
@@ -440,15 +490,16 @@ class FedAvg(Strategy):
         self.max_iters = max_iters
         pass
 
-    def fit_step(self, server: Server, clients: List[Client]) -> None:
+    def fit_step(
+        self, server: Server, clients: List[Client], byzantine_idxs: List[int]
+    ) -> None:
         print("Starting FedAvg fit step")
 
         for client in clients:
             client.compute_local_gradient(max_iters=self.max_iters)
 
         gradient = server.aggregate_gradients(
-            torch.stack([client.local_gradient.squeeze()
-                        for client in clients], dim=0)
+            torch.stack([client.local_gradient.squeeze() for client in clients], dim=0)
         )
 
         # OPTIMIZATION STEP (i.e. final iteration of the Newton method)
@@ -465,10 +516,17 @@ class FedAvg(Strategy):
 
 class Simulation:
     def __init__(
-        self, config, strategy: Strategy, n_clients: int, start_parameters=None
+        self,
+        config,
+        strategy: Strategy,
+        server: Server,
+        n_clients: int,
+        start_parameters=None,
+        seed=0,
     ) -> None:
         self.config = config
         self.strategy = strategy
+        self.rng = np.random.default_rng(seed=seed)
 
         self.clients = [Client(config, i) for i in range(n_clients)]
 
@@ -479,11 +537,10 @@ class Simulation:
             ][0]
             plt.hist(params_numpy, bins=100)
             plt.title(f"0_Client {j} before syncing")
-            plt.savefig(os.path.join(
-                "figures", f"0_Client {j} before syncing.png"))
+            plt.savefig(os.path.join("figures", f"0_Client {j} before syncing.png"))
             plt.close()
 
-        self.server = Server(config, start_parameters)
+        self.server = server
 
         # Equalize the parameters of all the clients
         self.server.send_params_to_clients(self.clients)
@@ -494,8 +551,7 @@ class Simulation:
             ][0]
             plt.hist(params_numpy, bins=100)
             plt.title(f"1_Client {j} after syncing")
-            plt.savefig(os.path.join(
-                "figures", f"1_Client {j} after syncing.png"))
+            plt.savefig(os.path.join("figures", f"1_Client {j} after syncing.png"))
             plt.close()
 
     def start_simulation(self, n_rounds: int) -> None:
@@ -510,7 +566,7 @@ class Simulation:
             reinit=True,
             mode=self.config["WANDB_MODE"],
             group=self.config["WANDB_GROUP"],
-            tags=self.config["WANDB_TAGS"]
+            tags=self.config["WANDB_TAGS"],
         )
 
         train_loss, train_accuracy, valid_loss, valid_accuracy = (
@@ -523,15 +579,28 @@ class Simulation:
                 "Train Accuracy": train_accuracy,
                 "Valid Loss": valid_loss,
                 "Valid Accuracy": valid_accuracy,
-            }, step=0
+            },
+            step=0,
         )
 
         print(
             f"Train Loss: {train_loss}, Train Accuracy: {train_accuracy}, Valid Loss: {valid_loss}, Valid Accuracy: {valid_accuracy}"
         )
-        for round in range(1, n_rounds+1):
+
+        for round in range(1, n_rounds + 1):
+
+            # Select a random subset of corrupt byzantine clients
+            # if self.config["N_BYZANTINE_CLIENTS"] > 0:
+            byzantine_idxs = self.rng.choice(
+                range(len(self.clients)),
+                self.config["N_BYZANTINE_CLIENTS"],
+                replace=False,
+            )
+            # else:
+            #     byzantine_idxs = []
+
             print(f"Starting Round {round}")
-            self.strategy.fit_step(self.server, self.clients)
+            self.strategy.fit_step(self.server, self.clients, byzantine_idxs)
 
             # plot client parameters after syncing
             for j, c in enumerate(self.clients):
@@ -542,8 +611,7 @@ class Simulation:
                 plt.hist(params_numpy, bins=100)
                 plt.title(f"2_Client {j} after syncing_{round}")
                 plt.savefig(
-                    os.path.join(
-                        "figures", f"2_Client {j} after syncing_{round}.png")
+                    os.path.join("figures", f"2_Client {j} after syncing_{round}.png")
                 )
                 plt.close()
 
@@ -569,7 +637,8 @@ class Simulation:
                     "Train Accuracy": train_accuracy,
                     "Valid Loss": valid_loss,
                     "Valid Accuracy": valid_accuracy,
-                }, step=logged_round
+                },
+                step=logged_round,
             )
 
         # Final Test step here (i.e. take mean of accuracies and losses)
@@ -617,7 +686,10 @@ if __name__ == "__main__":
     # strategy = GIANT(CONFIG["MAX_CLIENT_ITERS"])
     strategy = FedAvg(CONFIG["MAX_CLIENT_ITERS"])
 
-    sim = Simulation(config=CONFIG, strategy=strategy,
-                     n_clients=CONFIG["N_CLIENTS"])
+    server = Server(CONFIG, reduce_op="mean")
+
+    sim = Simulation(
+        config=CONFIG, strategy=strategy, server=server, n_clients=CONFIG["N_CLIENTS"]
+    )
 
     sim.start_simulation(n_rounds=CONFIG["NUM_ROUNDS"])

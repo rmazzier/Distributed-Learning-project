@@ -2,6 +2,8 @@
 
 import enum
 import torch
+import numpy as np
+from scipy.spatial.distance import cdist, euclidean
 
 
 class SPLIT(enum.Enum):
@@ -25,3 +27,57 @@ def backtracking_line_search(X, y, criterion, parameters, gradient, direction, c
             break
     # print(f"Step size: {candidate}")
     return candidate
+
+
+def geometric_median(X, eps=1e-5):
+    y = np.mean(X, 0)
+
+    while True:
+        D = cdist(X, [y])
+        nonzeros = (D != 0)[:, 0]
+
+        Dinv = 1 / D[nonzeros]
+        Dinvs = np.sum(Dinv)
+        W = Dinv / Dinvs
+        T = np.sum(W * X[nonzeros], 0)
+
+        num_zeros = len(X) - np.sum(nonzeros)
+        if num_zeros == 0:
+            y1 = T
+        elif num_zeros == len(X):
+            return y
+        else:
+            R = (T - y) * Dinvs
+            r = np.linalg.norm(R)
+            rinv = 0 if r == 0 else num_zeros / r
+            y1 = max(0, 1 - rinv) * T + min(1, rinv) * y
+
+        if euclidean(y, y1) < eps:
+            return y1
+
+        y = y1
+
+
+if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+
+    # Test the geometric_median function
+    # Sample 100 random 2-dimensional points
+    X = np.random.rand(100, 2)
+    # Insert some outliers
+    X[0] = [2.5, 3.1]
+    X[1] = [3, 3]
+    X[2] = [2.8, 3.2]
+    X[3] = [2.9, 3.3]
+    X[4] = [3.1, 3.1]
+    X[5] = [2.9, 3.2]
+
+    print(geometric_median(X))
+
+    # plot the points and the geometric median with different colors
+    plt.scatter(X[:, 0], X[:, 1], c="blue")
+    plt.scatter(geometric_median(X)[0], geometric_median(X)[1], c="red")
+
+    # Plot the mean for comparison
+    plt.scatter(np.mean(X, 0)[0], np.mean(X, 0)[1], c="green")
+    plt.show()

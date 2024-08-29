@@ -15,6 +15,7 @@ CONFIG = {
     "RESULTS_DIR": os.path.join("results"),
     # Dataset parameters
     "N_CLIENTS": 3,
+    "N_BYZANTINE_CLIENTS": 1,
     "MAX_CLIENT_ITERS": 50,
     # (Train, Validation), test is already separated
     "SPLIT_SIZES": [0.8, 0.2],
@@ -25,7 +26,7 @@ CONFIG = {
     "USE_RANDOM_FOURIER": False,
     "N_FOURIER_FEATURES": 10000,
     # --- WANDB VARIABLES ---
-    "MODEL_NAME": "FedAvgFirstTest",
+    "MODEL_NAME": "ByzantineTest",
     "WANDB_MODE": "online",
     "WANDB_GROUP": "tests",
     "WANDB_TAGS": [],
