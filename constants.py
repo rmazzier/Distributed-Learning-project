@@ -22,7 +22,7 @@ CONFIG = {
     "EPOCHS": 20,
     "NUM_ROUNDS": 20,
     "BATCH_SIZE": 128,
-    "GAMMA": 1e-8,
+    "GAMMA": 1e-3,
     "USE_RANDOM_FOURIER": False,
     "N_FOURIER_FEATURES": 10000,
     # --- WANDB VARIABLES ---
