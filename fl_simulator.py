@@ -134,26 +134,36 @@ class Client:
             # print("Forward pass...")
             y_pred = self.net(X).squeeze()
 
-            # Loss computation
             l2_norm = torch.tensor(0.0).to(DEVICE)
             for param in self.net.parameters():
                 l2_norm += torch.linalg.vector_norm(param, ord=2) ** 2
 
+            # Loss computation
             loss = self.criterion(y_pred, y) + \
                 self.config["GAMMA"] / 2 * l2_norm
+
+            if max_iters is not None:
+                loss = loss / max_iters
+            else:
+                loss = loss / len(self.train_dataloader)
 
             loss.backward()
         # Set the local gradient member variable to the accumulated gradient
         if is_byzantine:
-            print("eheh")
-            # return random stuff (check again)
+            # return random vector
+            # fake_grad = [
+            #     torch.randn(param.shape).to(DEVICE) for param in self.net.parameters()
+            # ]
+
+            # Test with uniform distribution instead of normal
             fake_grad = [
-                torch.randn(param.shape).to(DEVICE) for param in self.net.parameters()
+                torch.rand(param.shape).to(DEVICE) for param in self.net.parameters()
             ]
             self.local_gradient = torch.cat(fake_grad, dim=0).to(DEVICE)
         else:
             lg = [param.grad.cpu() for param in self.net.parameters()]
             self.local_gradient = torch.cat(lg, dim=0).to(DEVICE)
+            print()
 
     def compute_ant(
         self, aggregated_gradient: torch.Tensor, is_byzantine=False, max_iters=None
@@ -213,7 +223,6 @@ class Client:
         self,
         candidates: List[float],
         descent_direction: torch.Tensor,
-        c=0.1,
         max_iters=None,
     ) -> torch.Tensor:
         """
@@ -222,6 +231,12 @@ class Client:
         bls_losses = []
 
         self.net.eval()
+
+        # Get the current parameters as tensor
+        parameters = torch.cat(
+            [param.flatten() for param in self.net.parameters()]
+        )
+
         with torch.no_grad():
 
             for candidate in candidates:
@@ -233,11 +248,6 @@ class Client:
 
                     X = X.float().to(DEVICE)
                     y = y.float().to(DEVICE)
-
-                    # Get the current parameters as tensor
-                    parameters = torch.cat(
-                        [param.flatten() for param in self.net.parameters()]
-                    )
 
                     new_candidate_params = parameters + candidate * descent_direction
 
@@ -252,8 +262,10 @@ class Client:
                         * 0.5
                         * torch.linalg.vector_norm(new_candidate_params, ord=2) ** 2
                     )
-
-                l = l / len(self.train_dataloader)
+                if max_iters is not None:
+                    l = l / max_iters
+                else:
+                    l = l / len(self.train_dataloader)
                 bls_losses.append(l)
         return torch.tensor(bls_losses)
 
@@ -405,6 +417,7 @@ class Strategy:
         gradient: torch.Tensor,
         descent_direction: torch.Tensor,
         max_iters: int = None,
+        c: float = 0.1,
     ) -> float:
         """
         Returns the optimal step size with Backtracking line search.
@@ -416,7 +429,7 @@ class Strategy:
         for client in clients:
             candidate_losses.append(
                 client.get_bls_losses(
-                    candidates, descent_direction, c=0.1, max_iters=max_iters
+                    candidates, descent_direction, max_iters=max_iters
                 )
             )
             local_losses.append(client.compute_local_loss(SPLIT.TRAIN))
@@ -433,7 +446,7 @@ class Strategy:
         # Armijo-Goldstein condition
         # TODO: Check with Eleonora if this is correct
         for i, candidate_loss in enumerate(mean_bls_losses):
-            if candidate_loss <= local_losses.mean() + candidates[i] * 0.1 * torch.dot(
+            if candidate_loss <= local_losses.mean() + candidates[i] * c * torch.dot(
                 descent_direction.squeeze(), gradient.squeeze()
             ):
                 break
@@ -490,6 +503,8 @@ class GIANT(Strategy):
         # Communicate the new parameters to the clients
         server.send_params_to_clients(clients)
 
+        wandb.log({"Step size": step_size})
+
 
 class FedAvg(Strategy):
     def __init__(self, max_iters=None) -> None:
@@ -514,16 +529,20 @@ class FedAvg(Strategy):
                         for client in clients], dim=0)
         )
 
-        # OPTIMIZATION STEP (i.e. final iteration of the Newton method)
+        # OPTIMIZATION STEP
         # NB: Requires two additional communication rounds
         step_size = self.backtracking_ls(
-            clients, gradient, -gradient, max_iters=self.max_iters
+            clients, gradient, -gradient, max_iters=self.max_iters, c=0.5
         )
+
+        # step_size = 0.1
         print(f"Step size = {step_size}")
         server.current_params = server.current_params - step_size * gradient
 
         # Communicate the new parameters to the clients
         server.send_params_to_clients(clients)
+
+        wandb.log({"Step size": step_size})
 
 
 class Simulation:

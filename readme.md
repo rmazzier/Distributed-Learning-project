@@ -1,6 +1,5 @@
-## Project Distributed Learning and Optimization
+# Implementation and Evaluation of the GIANT Algorithm in the Presence of Byzantine Attackers
 
-TODO:
- - Implementare GIANT:
-    - Implementare conjugate gradient ...
-    - Implementare logica aggregazione ...
+## Distributed Machine Learning and Optimization Ph.D. Course (A.A. 23/24)
+
+This project explores the performance and robustness of the Globally Improved ANT (GIANT) and its variant Median-Based Approximate Newton’s Method (MNM) algorithms for distributed learning, particularly focusing on the presence of Byzantine attackers. We start by comparing GIANT with the Federated Averaging (FedAvg) algorithm, focusing on their convergence speed with respect to the number of performed communication rounds. Next, we assess the robustness of MNM against Byzantine attacks by varying the number of malicious clients and examining the algorithm’s resilience under these conditions. Additionally, we investigate how different random attack distributions (specifically Standard Normal and Uniform distributions) affect the algorithm’s performance. Our experiments suggest that while MNM maintains theoretical convergence, its empirical performance may degrade depending on the distribution of the random attacks, potentially leading to suboptimal outcomes.

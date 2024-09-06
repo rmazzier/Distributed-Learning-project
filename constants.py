@@ -28,7 +28,7 @@ CONFIG = {
     # --- WANDB VARIABLES ---
     "MODEL_NAME": "ByzantineTest",
     "WANDB_MODE": "online",
-    "WANDB_GROUP": "tests",
+    "WANDB_GROUP": "dev",
     "WANDB_TAGS": [],
-    "NOTES": "First test",
+    "NOTES": "Attempt of Definitive Runs",
 }
